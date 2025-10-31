@@ -14,7 +14,7 @@ load("//cocotb:defs.bzl",
      # Pre-configured helpers
      "verilator_config")
 
-load("@py_deps//:requirements.bzl", "requirement")
+load("@xarge_py_deps//:requirements.bzl", "requirement")
 
 # === Example 1: Primary Industry Standard API ===
 
