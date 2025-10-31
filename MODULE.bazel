@@ -1,0 +1,21 @@
+module(
+    name = "xarge_rtl_rules",
+    version = "1.0.0",
+    compatibility_level = 1,
+)
+
+# Dependencies
+bazel_dep(name = "rules_python", version = "0.35.0")
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
+
+# Python toolchain and dependencies
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.11")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "py_deps",
+    python_version = "3.11",
+    requirements_lock = "//third_party/python:requirements.txt",
+)
+use_repo(pip, "py_deps")

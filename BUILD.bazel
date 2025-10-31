@@ -1,0 +1,22 @@
+# Root package for xarge_rtl_rules
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "distribution",
+    srcs = [
+        "MODULE.bazel",
+        "README.md",
+    ] + glob([
+        "cocotb/**/*.bzl",
+        "cocotb/**/*.py",
+        "uvm/**/*.bzl",
+        "synthesis/**/*.bzl", 
+        "pnr/**/*.bzl",
+        "**/BUILD.bazel",
+    ], allow_empty = True),
+)
+
+exports_files([
+    "MODULE.bazel",
+])

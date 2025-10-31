@@ -1,0 +1,129 @@
+# CocoTB Examples with Industry Standard API
+#
+# This demonstrates usage of the industry-standard CocoTB rules with multiple naming conventions.
+# Note: When this is used as part of xarge_rtl_rules repository, load from //cocotb:defs.bzl
+# When used externally, load from @xarge_rtl_rules//cocotb:defs.bzl
+
+load("//cocotb:defs.bzl", 
+     # Primary API
+     "cocotb_config", "cocotb_library", "cocotb_test",
+     # Simulation aliases  
+     "sim_config", "sim_build", "sim_test",
+     # Hardware aliases
+     "hdl_sim_config", "hdl_sim_target", "hdl_testbench",
+     # Pre-configured helpers
+     "verilator_config")
+
+load("@py_deps//:requirements.bzl", "requirement")
+
+# === Example 1: Primary Industry Standard API ===
+
+# Configuration using primary API
+cocotb_config(
+    name = "primary_config",
+    simulator = "verilator",
+)
+
+# Library (build target) using primary API  
+cocotb_library(
+    name = "skid_buffer_lib",
+    cfg = ":primary_config",
+    hdl_toplevel = "rv_skid_buffer",
+    verilog_sources = ["//rtl/utils:rv_skid_buffer_v"],
+)
+
+# Test using primary API
+cocotb_test(
+    name = "skid_buffer_primary_test",
+    build = ":skid_buffer_lib",
+    test_module = ["test_rv_skid_buffer.py"],
+    testcase = ["test_rv_skid_buffer"],
+    deps = [
+        requirement("cocotb"),
+        requirement("cocotbext-axi"),
+    ],
+)
+
+# === Example 2: Simulation-Specific Aliases ===
+
+sim_config(
+    name = "sim_cfg",
+    simulator = "verilator",
+)
+
+sim_build(
+    name = "skid_buffer_sim",
+    cfg = ":sim_cfg", 
+    hdl_toplevel = "rv_skid_buffer",
+    verilog_sources = ["//rtl/utils:rv_skid_buffer_v"],
+)
+
+sim_test(
+    name = "skid_buffer_sim_test",
+    build = ":skid_buffer_sim",
+    test_module = ["test_rv_skid_buffer.py"],
+    testcase = ["test_rv_skid_buffer_random"],
+    deps = [
+        requirement("cocotb"),
+        requirement("cocotbext-axi"),
+    ],
+)
+
+# === Example 3: Hardware/RTL Aliases ===
+
+hdl_sim_config(
+    name = "hdl_cfg",
+    simulator = "verilator",
+)
+
+hdl_sim_target(
+    name = "skid_buffer_hdl",
+    cfg = ":hdl_cfg",
+    hdl_toplevel = "rv_skid_buffer", 
+    verilog_sources = ["//rtl/utils:rv_skid_buffer_v"],
+)
+
+hdl_testbench(
+    name = "skid_buffer_hdl_test",
+    build = ":skid_buffer_hdl",
+    test_module = ["test_rv_skid_buffer.py"],
+    deps = [
+        requirement("cocotb"),
+        requirement("cocotbext-axi"),
+    ],
+)
+
+# === Example 4: Pre-configured Helper ===
+
+verilator_config(
+    name = "verilator_helper_cfg",
+)
+
+cocotb_library(
+    name = "skid_buffer_verilator",
+    cfg = ":verilator_helper_cfg",
+    hdl_toplevel = "rv_skid_buffer",
+    verilog_sources = ["//rtl/utils:rv_skid_buffer_v"],
+)
+
+# === Example 5: Multiple Test Configurations ===
+
+# Parameterized tests using industry standard names
+[cocotb_test(
+    name = "skid_buffer_width_{}_test".format(width),
+    build = ":skid_buffer_lib",
+    test_module = ["test_rv_skid_buffer.py"],
+    parameters = {"WIDTH": str(width)},
+    testcase = ["test_rv_skid_buffer"],
+    deps = [
+        requirement("cocotb"),
+        requirement("cocotbext-axi"),
+    ],
+) for width in [8, 16, 32, 64]]
+
+# === File Groups for Examples ===
+
+filegroup(
+    name = "all_examples",
+    srcs = glob(["**/*.py", "**/BUILD.bazel"]),
+)

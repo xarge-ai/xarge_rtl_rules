@@ -1,0 +1,2 @@
+# Private implementation files - not part of public API
+package(default_visibility = ["//cocotb:__subpackages__"])

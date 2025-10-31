@@ -1,0 +1,5 @@
+# Synthesis Rules Package (Coming Soon)
+
+package(default_visibility = ["//visibility:public"])
+
+# Placeholder for future synthesis rules
