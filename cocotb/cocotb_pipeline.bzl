@@ -463,7 +463,7 @@ cocotb_build = rule(
             default = "",
         ),
         "_cocotb_driver": attr.label(
-            default = "//tools:cocotb_driver",
+            default = "//cocotb/tools:cocotb_driver",
             executable = True,
             cfg = "exec",
         ),
@@ -564,7 +564,7 @@ cocotb_test = rule(
             default = "",
         ),
         "_cocotb_driver": attr.label(
-            default = "//tools:cocotb_driver",
+            default = "//cocotb/tools:cocotb_driver",
             executable = True,
             cfg = "exec",
         ),
