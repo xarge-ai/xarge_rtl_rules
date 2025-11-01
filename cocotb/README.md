@@ -165,7 +165,6 @@ rules/cocotb/
 ├── BUILD.bazel        # Package definition
 ├── private/           # Implementation details
 │   ├── pipeline.bzl   # Core rule implementations  
-│   ├── legacy.bzl     # Backward compatibility
 │   └── BUILD.bazel    # Private package
 ├── tools/             # Executable tools
 │   ├── cocotb_driver.py

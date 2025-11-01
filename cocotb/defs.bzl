@@ -30,7 +30,7 @@ load("//cocotb/private:pipeline.bzl",
      _cocotb_test = "cocotb_test")
 
 # Re-export legacy rule for backward compatibility  
-load("//cocotb/private:legacy.bzl", 
+load("//cocotb:cocotb_pipeline.bzl", 
      _cocotb_build_test = "cocotb_build_test")
 
 # Re-export providers for advanced users
