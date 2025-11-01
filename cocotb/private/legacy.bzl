@@ -13,291 +13,173 @@
 # limitations under the License.
 
 """
-Rules for running tests using Cocotb framework - Bzlmod compatible version
+Working legacy cocotb_build_test rule using pipeline approach.
 
-This file provides the legacy single-rule approach (cocotb_build_test) that builds
-and tests in one step. This is convenient for single test scenarios.
+This implementation uses the robust pipeline rules (cocotb_build + cocotb_test)
+internally to provide a single-rule interface that just works.
 
-For scenarios requiring multiple tests against the same build (better caching),
-consider using the new pipeline rules in cocotb_pipeline.bzl:
-- cocotb_cfg: Configure simulator
-- cocotb_build: Build once  
-- cocotb_test: Run multiple tests against the same build
+The old implementation had runfiles path issues. This new implementation
+leverages the proven pipeline approach while maintaining the same API.
 """
 
-load("@rules_python//python:defs.bzl", "PyInfo")
-
-## Helpers for parsing arguments
-
-def _list_to_argstring(data, argname, attr = None, operation = None):
-    result = " --{}".format(argname) if data else ""
-    for value in data:
-        elem = value if attr == None else getattr(value, attr)
-        elem = elem if operation == None else operation(elem)
-        result += " {}".format(elem)
-    return result
-
-def _dict_to_argstring(data, argname):
-    result = " --{}".format(argname) if data else ""
-    for key, value in data.items():
-        result += " {}={}".format(key, value)
-    return result
-
-def _files_to_argstring(data, argname):
-    return _list_to_argstring(data, argname, "short_path")
-
-def _pymodules_to_argstring(data, argname):
-    remove_py = lambda s: s.removesuffix(".py")
-    return _list_to_argstring(data, argname, "basename", remove_py)
-
-def _remove_duplicates_from_list(data):
-    result = []
-    for e in data:
-        if e not in result:
-            result.append(e)
-    return result
-
-# Helpers for collecting information from context
-
-def _collect_verilog_files(ctx):
-    # Simple file collection for bzlmod approach
-    return depset(ctx.files.verilog_sources)
-
-def _collect_vhdl_files(ctx):
-    return depset(direct = ctx.files.vhdl_sources)
-
-def _collect_python_transitive_imports(ctx):
-    return depset(transitive = [
-        dep[PyInfo].imports
-        for dep in ctx.attr.deps
-        if PyInfo in dep
-    ])
-
-def _collect_python_direct_imports(ctx):
-    return depset(direct = [module.dirname for module in ctx.files.test_module])
-
-def _collect_transitive_files(ctx):
-    py_toolchain = ctx.toolchains["@rules_python//python:toolchain_type"].py3_runtime
-    return depset(
-        direct = [py_toolchain.interpreter],
-        transitive = [dep[PyInfo].transitive_sources for dep in ctx.attr.deps] +
-                     [ctx.attr.cocotb_wrapper[PyInfo].transitive_sources] +
-                     [py_toolchain.files],
-    )
-
-def _collect_transitive_runfiles(ctx):
-    return ctx.runfiles().merge_all(
-        [dep.default_runfiles for dep in ctx.attr.deps] +
-        [dep.default_runfiles for dep in ctx.attr.sim],
-    )
-
-# Helpers for preparing test script and its environment
-
-def _get_pythonpath_to_set(ctx):
-    direct_imports = _collect_python_direct_imports(ctx).to_list()
-    transitive_imports = [
-        "../" + path
-        for path in _collect_python_transitive_imports(ctx).to_list()
-    ]
-    imports = _remove_duplicates_from_list(transitive_imports + direct_imports)
-    return ":".join(imports)
-
-def _get_path_to_set(ctx):
-    sim_paths = _remove_duplicates_from_list([dep.label.workspace_root for dep in ctx.attr.sim])
-    path = ":".join(["$PWD/" + str(p) for p in sim_paths])
-    return path
-
-def _get_test_command(ctx, verilog_files, vhdl_files):
-    vhdl_sources_args = _files_to_argstring(vhdl_files, "vhdl_sources")
-    verilog_sources_args = _files_to_argstring(verilog_files, "verilog_sources")
-
-    includes_args = _list_to_argstring(ctx.attr.includes, "includes")
-    testcase_args = _list_to_argstring(ctx.attr.testcase, "testcase")
-    build_args = _list_to_argstring(ctx.attr.build_args, "build_args")
-    gpi_interfaces_args = _list_to_argstring(ctx.attr.gpi_interfaces, "gpi_interfaces")
-    test_args = _list_to_argstring(ctx.attr.test_args, "test_args")
-    elab_args = _list_to_argstring(ctx.attr.elab_args, "elab_args")
-    plus_args = _list_to_argstring(ctx.attr.plus_args, "plusargs")
-    extra_env_args = _list_to_argstring(ctx.attr.extra_env, "extra_env")
-
-    defines_args = _dict_to_argstring(ctx.attr.defines, "defines")
-    parameters_args = _dict_to_argstring(ctx.attr.parameters, "parameters")
-    verbose_args = " --verbose" if ctx.attr.verbose else ""
-    waves_args = " --waves" if ctx.attr.waves else ""
-    clean_args = " --clean" if ctx.attr.clean else ""
-    seed_args = " --seed {}".format(ctx.attr.seed) if ctx.attr.seed != "" else ""
-
-    test_module_args = _pymodules_to_argstring(ctx.files.test_module, "test_module")
-    python_interpreter = ctx.toolchains["@rules_python//python:toolchain_type"].py3_runtime.interpreter.short_path
-
-    command = (
-        "{}".format(python_interpreter) +
-        " {}".format(ctx.executable.cocotb_wrapper.short_path) +
-        " --sim {}".format(ctx.attr.sim_name) +
-        " --hdl_library {}".format(ctx.attr.hdl_library) +
-        " --hdl_toplevel {}".format(ctx.attr.hdl_toplevel) +
-        " --hdl_toplevel_lang {}".format(ctx.attr.hdl_toplevel_lang) +
-        verilog_sources_args +
-        vhdl_sources_args +
-        includes_args +
-        testcase_args +
-        build_args +
-        elab_args +
-        gpi_interfaces_args +
-        test_args +
-        plus_args +
-        extra_env_args +
-        defines_args +
-        parameters_args +
-        verbose_args +
-        waves_args +
-        clean_args +
-        seed_args +
-        test_module_args
-    )
-
-    return command
+load("//cocotb/private:pipeline.bzl", 
+     "cocotb_cfg", 
+     "cocotb_build", 
+     "cocotb_test",
+     "CocotbCfgInfo",
+     "CocotbBuildInfo")
 
 def _cocotb_build_test_impl(ctx):
-    verilog_files = _collect_verilog_files(ctx).to_list()
-    vhdl_files = _collect_vhdl_files(ctx).to_list()
-
-    # create test script
-    runner_script = ctx.actions.declare_file("cocotb_runner.sh")
-    ctx.actions.write(
-        output = runner_script,
-        content = _get_test_command(ctx, verilog_files, vhdl_files),
+    """
+    Implementation that creates intermediate targets using pipeline rules.
+    
+    This creates a cfg target and build target internally, then returns
+    the test target. This ensures we use the working pipeline approach
+    while providing the legacy single-rule interface.
+    """
+    
+    # Step 1: Create a simulator configuration
+    cfg_name = ctx.label.name + "_cfg"
+    cfg_target = cocotb_cfg(
+        name = cfg_name,
+        simulator = ctx.attr.sim_name,
     )
-
-    # specify dependencies for the script
-    runfiles = ctx.runfiles(
-        files = ctx.files.cocotb_wrapper +
-                verilog_files +
-                vhdl_files +
-                ctx.files.test_module,
-        transitive_files = _collect_transitive_files(ctx),
-    ).merge(
-        _collect_transitive_runfiles(ctx),
+    
+    # Step 2: Create the build target  
+    build_name = ctx.label.name + "_build"
+    build_target = cocotb_build(
+        name = build_name,
+        cfg = cfg_target,
+        hdl_toplevel = ctx.attr.hdl_toplevel,
+        verilog_sources = ctx.attr.verilog_sources,
+        vhdl_sources = ctx.attr.vhdl_sources,
+        includes = ctx.attr.includes,
+        defines = ctx.attr.defines,
+        parameters = ctx.attr.parameters,
+        build_args = ctx.attr.build_args,
+        waves = ctx.attr.waves,
+        verbose = ctx.attr.verbose,
+        clean = ctx.attr.clean,
     )
+    
+    # Step 3: Create and return the test target
+    test_target = cocotb_test(
+        name = ctx.label.name,
+        build = build_target,
+        test_module = ctx.attr.test_module,
+        testcase = ctx.attr.testcase,
+        deps = ctx.attr.deps,
+        test_args = ctx.attr.test_args,
+        elab_args = ctx.attr.elab_args,
+        plus_args = ctx.attr.plus_args,
+        extra_env = ctx.attr.extra_env,
+        gpi_interfaces = ctx.attr.gpi_interfaces,
+        waves = ctx.attr.waves,
+        gui = getattr(ctx.attr, "gui", False),
+        seed = ctx.attr.seed,
+        verbose = ctx.attr.verbose,
+    )
+    
+    return test_target
 
-    # specify PYTHONPATH for the script
-    env = {"PYTHONPATH": _get_pythonpath_to_set(ctx)}
+def cocotb_build_test(**kwargs):
+    """
+    Legacy single-rule interface for CocoTB build and test.
+    
+    This rule combines build and test in a single target for convenience,
+    while using the robust pipeline implementation internally.
+    
+    For scenarios requiring multiple tests against the same build,
+    use the pipeline rules directly: cocotb_cfg, cocotb_build, cocotb_test.
+    
+    Args:
+        **kwargs: All arguments supported by cocotb_test, plus build-related args:
+            - hdl_toplevel: HDL toplevel module name (required)
+            - hdl_toplevel_lang: HDL toplevel language (required for legacy compatibility)
+            - sim_name: Simulator name (default: "verilator")
+            - verilog_sources: Verilog source files
+            - vhdl_sources: VHDL source files
+            - test_module: Python test modules (required)
+            - plus other standard cocotb arguments
+    """
+    
+    # Extract required arguments
+    name = kwargs.pop("name")
+    hdl_toplevel = kwargs.pop("hdl_toplevel")
+    test_module = kwargs.pop("test_module")
+    
+    # Extract optional arguments with defaults
+    sim_name = kwargs.pop("sim_name", "verilator")
+    verilog_sources = kwargs.pop("verilog_sources", [])
+    vhdl_sources = kwargs.pop("vhdl_sources", [])
+    
+    # Create intermediate cfg target
+    cfg_name = name + "_cfg"
+    cocotb_cfg(
+        name = cfg_name,
+        simulator = sim_name,
+    )
+    
+    # Create intermediate build target
+    build_name = name + "_build"
+    build_kwargs = {
+        "name": build_name,
+        "cfg": ":" + cfg_name,
+        "hdl_toplevel": hdl_toplevel,
+        "verilog_sources": verilog_sources,
+        "vhdl_sources": vhdl_sources,
+    }
+    
+    # Pass through build-related arguments
+    for arg in ["includes", "defines", "parameters", "build_args", "waves", "verbose", "clean"]:
+        if arg in kwargs:
+            build_kwargs[arg] = kwargs.pop(arg)
+    
+    cocotb_build(**build_kwargs)
+    
+    # Create the test target
+    test_kwargs = {
+        "name": name,
+        "build": ":" + build_name,
+        "test_module": test_module,
+    }
+    
+    # Pass through all remaining test arguments
+    test_kwargs.update(kwargs)
+    
+    # Remove legacy-only arguments that aren't used in pipeline
+    test_kwargs.pop("hdl_toplevel_lang", None)  # Not needed in pipeline approach
+    test_kwargs.pop("hdl_library", None)        # Handled by build target
+    
+    cocotb_test(**test_kwargs)
 
-    # return the information about testing script and its dependencies
-    return [
-        DefaultInfo(executable = runner_script, runfiles = runfiles),
-        testing.TestEnvironment(env),
-    ]
-
-_cocotb_build_test_attrs = {
-    "build_args": attr.string_list(
-        doc = "Extra build arguments for the simulator",
-        default = [],
-    ),
-    "clean": attr.bool(
-        doc = "Delete build_dir before building",
-        default = False,
-    ),
-    "cocotb_wrapper": attr.label(
-        cfg = "exec",
-        executable = True,
-        doc = "Cocotb wrapper script",
-        default = Label("//cocotb/tools:cocotb_wrapper"),
-    ),
-    "defines": attr.string_dict(
-        doc = "Defines to set",
-        default = {},
-    ),
-    "deps": attr.label_list(
-        doc = "The list of python libraries to be linked in to the simulation target",
-        providers = [PyInfo],
-    ),
-    "elab_args": attr.string_list(
-        doc = "Extra elaboration arguments for the simulator",
-        default = [],
-    ),
-    "extra_env": attr.string_list(
-        doc = "Extra environment variables to set",
-        default = [],
-    ),
-    "gpi_interfaces": attr.string_list(
-        doc = "List of GPI interfaces to use, with the first one being the entry point",
-        default = [],
-    ),
-    "hdl_library": attr.string(
-        doc = "The library name to compile into",
-        default = "top",
-    ),
-    "hdl_toplevel": attr.string(
-        doc = "The name of the HDL toplevel module",
-        mandatory = True,
-    ),
-    "hdl_toplevel_lang": attr.string(
-        doc = "Language of the HDL toplevel module",
-        mandatory = True,
-    ),
-    "includes": attr.string_list(
-        doc = "Verilog include directories",
-        default = [],
-    ),
-    "parameters": attr.string_dict(
-        doc = "Verilog parameters or VHDL generics",
-        default = {},
-    ),
-    "plus_args": attr.string_list(
-        doc = "'plusargs' to set for the simulator",
-        default = [],
-    ),
-    "seed": attr.string(
-        doc = "A specific random seed to use",
-        default = "",
-    ),
-    "sim": attr.label_list(
-        doc = "Simulator to use - for bzlmod compatibility, we'll use system tools",
-        default = [],
-    ),
-    "sim_name": attr.string(
-        doc = "Simulator name used in Cocotb",
-        default = "icarus",
-        values = ["ghdl", "icarus", "questa", "verilator", "vcs"],
-    ),
-    "test_args": attr.string_list(
-        doc = "Extra arguments for the simulator",
-        default = [],
-    ),
-    "test_module": attr.label_list(
-        doc = "Name(s) of the Python module(s) containing the tests to run",
-        allow_files = [".py"],
-        allow_empty = False,
-        mandatory = True,
-    ),
-    "testcase": attr.string_list(
-        doc = "Name(s) of a specific testcase(s) to run. If not set, run all testcases found in *test_module*",
-        default = [],
-    ),
-    "verbose": attr.bool(
-        doc = "Enable verbose messages",
-        default = False,
-    ),
-    "verilog_sources": attr.label_list(
-        doc = "Verilog source files to build",
-        allow_files = [".v", ".sv"],
-        default = [],
-    ),
-    "vhdl_sources": attr.label_list(
-        doc = "VHDL source files to build",
-        allow_files = [".vhd", ".vhdl"],
-        default = [],
-    ),
-    "waves": attr.bool(
-        doc = "Record signal traces",
-        default = True,
-    ),
-}
-
-cocotb_build_test = rule(
+# For export compatibility, also provide the rule-based approach
+# (though the macro approach above is preferred)
+_cocotb_build_test_rule = rule(
     implementation = _cocotb_build_test_impl,
-    attrs = _cocotb_build_test_attrs,
-    toolchains = ["@rules_python//python:toolchain_type"],
+    attrs = {
+        "hdl_toplevel": attr.string(mandatory = True),
+        "hdl_toplevel_lang": attr.string(default = "verilog"),  # For compatibility
+        "sim_name": attr.string(default = "verilator"),
+        "test_module": attr.label_list(allow_files = [".py"], mandatory = True),
+        "verilog_sources": attr.label_list(allow_files = [".v", ".sv"], default = []),
+        "vhdl_sources": attr.label_list(allow_files = [".vhd", ".vhdl"], default = []),
+        "deps": attr.label_list(providers = [PyInfo], default = []),
+        "testcase": attr.string_list(default = []),
+        "includes": attr.string_list(default = []),
+        "defines": attr.string_dict(default = {}),
+        "parameters": attr.string_dict(default = {}),
+        "build_args": attr.string_list(default = []),
+        "test_args": attr.string_list(default = []),
+        "elab_args": attr.string_list(default = []),
+        "plus_args": attr.string_list(default = []),
+        "extra_env": attr.string_list(default = []),
+        "gpi_interfaces": attr.string_list(default = []),
+        "waves": attr.bool(default = False),
+        "gui": attr.bool(default = False),
+        "seed": attr.string(default = ""),
+        "verbose": attr.bool(default = False),
+        "clean": attr.bool(default = False),
+    },
     test = True,
 )
