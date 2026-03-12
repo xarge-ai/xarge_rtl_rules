@@ -33,8 +33,13 @@ def main():
 
     sby_path = shutil.which("sby")
     if sby_path is None:
-        print(f"SKIP: SymbiYosys (sby) not found; skipping formal run for {sby_file}")
-        sys.exit(0)
+        allow_skip = os.environ.get("ALLOW_MISSING_SBY", "").lower() in ("1", "true", "yes")
+        if allow_skip:
+            print(f"SKIP: SymbiYosys (sby) not found; skipping formal run for {sby_file}")
+            sys.exit(0)
+        else:
+            print(f"ERROR: SymbiYosys (sby) not found; cannot run formal for {sby_file}", file=sys.stderr)
+            sys.exit(1)
 
     # Resolve absolute path before changing directory.
     sby_abs = os.path.abspath(sby_file)
