@@ -10,6 +10,8 @@ filegroup(
     ] + glob([
         "cocotb/**/*.bzl",
         "cocotb/**/*.py",
+        "formal/**/*.bzl",
+        "formal/**/*.py",
         "uvm/**/*.bzl",
         "synthesis/**/*.bzl", 
         "pnr/**/*.bzl",
