@@ -66,22 +66,23 @@ def generate_sby(args):
     # [script]
     lines.append("[script]")
     define_prefix = " ".join("-D{}".format(d) for d in (args.define or []))
-    for rtl in args.rtl_files:
-        basename = os.path.basename(rtl)
+    rtl_paths = [os.path.abspath(rtl) for rtl in args.rtl_files]
+    properties_path = os.path.abspath(args.properties)
+    for rtl_path in rtl_paths:
         if define_prefix:
-            lines.append("read -formal {} {}".format(define_prefix, basename))
+            lines.append("read -formal {} {}".format(define_prefix, rtl_path))
         else:
-            lines.append("read -formal {}".format(basename))
-    lines.append("read -formal {}".format(os.path.basename(args.properties)))
+            lines.append("read -formal {}".format(rtl_path))
+    lines.append("read -formal {}".format(properties_path))
     flatten = " -flatten" if not args.no_flatten else ""
     lines.append("prep -top {}{}".format(top, flatten))
     lines.append("")
 
     # [files]
     lines.append("[files]")
-    for rtl in args.rtl_files:
-        lines.append(os.path.abspath(rtl))
-    lines.append(os.path.abspath(args.properties))
+    for rtl_path in rtl_paths:
+        lines.append(rtl_path)
+    lines.append(properties_path)
     lines.append("")
 
     return "\n".join(lines)
