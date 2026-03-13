@@ -67,12 +67,12 @@ def generate_sby(args):
     lines.append("[script]")
     define_prefix = " ".join("-D{}".format(d) for d in (args.define or []))
     for rtl in args.rtl_files:
-        basename = os.path.basename(rtl)
+        abs_rtl = os.path.abspath(rtl)
         if define_prefix:
-            lines.append("read -formal {} {}".format(define_prefix, basename))
+            lines.append("read -formal {} {}".format(define_prefix, abs_rtl))
         else:
-            lines.append("read -formal {}".format(basename))
-    lines.append("read -formal {}".format(os.path.basename(args.properties)))
+            lines.append("read -formal {}".format(abs_rtl))
+    lines.append("read -formal {}".format(os.path.abspath(args.properties)))
     flatten = " -flatten" if not args.no_flatten else ""
     lines.append("prep -top {}{}".format(top, flatten))
     lines.append("")
@@ -101,9 +101,13 @@ def main():
     parser.add_argument("--top", default=None)
     parser.add_argument("--define", action="append", default=[])
     parser.add_argument("--properties", required=True)
-    parser.add_argument("--rtl", action="append", default=[], dest="rtl_files")
+    parser.add_argument("--rtl", action="append", nargs="+", default=[], dest="rtl_files")
+    parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
+
+    # Flatten rtl_files: nargs="+" with action="append" gives a list of lists
+    args.rtl_files = [f for sublist in args.rtl_files for f in sublist]
 
     # Decode colon-separated engine tokens (Bazel shell-tokenizes spaces)
     args.bmc_engine = args.bmc_engine.replace(":", " ")
@@ -128,9 +132,10 @@ def main():
         f.write(sby_content)
 
     print("Running formal verification")
-    print("Generated .sby configuration:")
-    for line in sby_content.splitlines():
-        print("  " + line)
+    if args.verbose:
+        print("Generated .sby configuration:")
+        for line in sby_content.splitlines():
+            print("  " + line)
 
     os.chdir(tmpdir)
     result = subprocess.run([sby_path, "-f", sby_file], env=os.environ)
