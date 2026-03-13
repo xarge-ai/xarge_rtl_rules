@@ -96,7 +96,7 @@ def sby_test(
 
     args.extend(["--properties", "$(location {})".format(properties)])
     for dep in rtl_deps:
-        args.extend(["--rtl", "$(location {})".format(dep)])
+        args.extend(["--rtl", "$(locations {})".format(dep)])
 
     native.py_test(
         name = name,
