@@ -101,9 +101,15 @@ def main():
     parser.add_argument("--top", default=None)
     parser.add_argument("--define", action="append", default=[])
     parser.add_argument("--properties", required=True)
-    parser.add_argument("--rtl", action="append", default=[], dest="rtl_files")
+    parser.add_argument("--rtl", action="append", nargs="+", default=[], dest="rtl_files")
 
     args = parser.parse_args()
+
+    # Flatten list-of-lists produced by --rtl with action="append", nargs="+"
+    if args.rtl_files:
+        args.rtl_files = [rtl for group in args.rtl_files for rtl in group]
+    else:
+        args.rtl_files = []
 
     # Decode colon-separated engine tokens (Bazel shell-tokenizes spaces)
     args.bmc_engine = args.bmc_engine.replace(":", " ")
