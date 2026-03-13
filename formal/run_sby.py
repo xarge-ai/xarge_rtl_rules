@@ -12,53 +12,128 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Python-based SymbiYosys formal verification runner for Bazel.
+"""SymbiYosys runner that generates .sby configuration from CLI arguments.
 
-Handles path resolution for Bazel sandbox environments where the .sby
-file's [files] section uses relative paths (e.g. ../../rtl/...).
+Called by the sby_test() Bazel macro. Generates a .sby file on-the-fly
+from --bmc-depth, --prove, --rtl, --properties etc., then runs sby.
 """
 
+import argparse
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+
+
+def generate_sby(args):
+    """Generate .sby file content from parsed arguments."""
+    top = args.top or os.path.splitext(os.path.basename(args.properties))[0]
+
+    lines = []
+
+    # [tasks]
+    lines.append("[tasks]")
+    lines.append("bmc")
+    if args.prove:
+        lines.append("prove")
+    lines.append("")
+
+    # [options]
+    lines.append("[options]")
+    lines.append("bmc: mode bmc")
+    lines.append("bmc: depth {}".format(args.bmc_depth))
+    if args.prove:
+        lines.append("prove: mode prove")
+        if "smtbmc" in args.prove_engine:
+            depth = args.prove_depth if args.prove_depth else args.bmc_depth
+            lines.append("prove: depth {}".format(depth))
+    if args.multiclock:
+        lines.append("multiclock on")
+    lines.append("")
+
+    # [engines]
+    lines.append("[engines]")
+    if args.prove and args.bmc_engine == args.prove_engine:
+        # Same engine for both tasks — no task qualifier needed
+        lines.append(args.bmc_engine)
+    else:
+        lines.append("bmc: {}".format(args.bmc_engine))
+        if args.prove:
+            lines.append("prove: {}".format(args.prove_engine))
+    lines.append("")
+
+    # [script]
+    lines.append("[script]")
+    define_prefix = " ".join("-D{}".format(d) for d in (args.define or []))
+    for rtl in args.rtl_files:
+        basename = os.path.basename(rtl)
+        if define_prefix:
+            lines.append("read -formal {} {}".format(define_prefix, basename))
+        else:
+            lines.append("read -formal {}".format(basename))
+    lines.append("read -formal {}".format(os.path.basename(args.properties)))
+    flatten = " -flatten" if not args.no_flatten else ""
+    lines.append("prep -top {}{}".format(top, flatten))
+    lines.append("")
+
+    # [files]
+    lines.append("[files]")
+    for rtl in args.rtl_files:
+        lines.append(os.path.abspath(rtl))
+    lines.append(os.path.abspath(args.properties))
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <module.sby>", file=sys.stderr)
-        sys.exit(2)
+    parser = argparse.ArgumentParser(
+        description="SymbiYosys formal verification runner",
+    )
+    parser.add_argument("--bmc-depth", type=int, default=20)
+    parser.add_argument("--bmc-engine", default="smtbmc")
+    parser.add_argument("--prove", action="store_true")
+    parser.add_argument("--prove-engine", default="abc pdr")
+    parser.add_argument("--prove-depth", type=int, default=None)
+    parser.add_argument("--multiclock", action="store_true")
+    parser.add_argument("--no-flatten", action="store_true")
+    parser.add_argument("--top", default=None)
+    parser.add_argument("--define", action="append", default=[])
+    parser.add_argument("--properties", required=True)
+    parser.add_argument("--rtl", action="append", default=[], dest="rtl_files")
 
-    sby_file = sys.argv[1]
+    args = parser.parse_args()
+
+    # Decode colon-separated engine tokens (Bazel shell-tokenizes spaces)
+    args.bmc_engine = args.bmc_engine.replace(":", " ")
+    args.prove_engine = args.prove_engine.replace(":", " ")
 
     sby_path = shutil.which("sby")
     if sby_path is None:
         allow_skip = os.environ.get("ALLOW_MISSING_SBY", "").lower() in ("1", "true", "yes")
         if allow_skip:
-            print(f"SKIP: SymbiYosys (sby) not found; skipping formal run for {sby_file}")
+            print("SKIP: SymbiYosys (sby) not found; skipping formal verification")
             sys.exit(0)
         else:
-            print(f"ERROR: SymbiYosys (sby) not found; cannot run formal for {sby_file}", file=sys.stderr)
+            print("ERROR: SymbiYosys (sby) not found; cannot run formal verification", file=sys.stderr)
             sys.exit(1)
 
-    # Resolve absolute path before changing directory.
-    sby_abs = os.path.abspath(sby_file)
-    sby_dir = os.path.dirname(sby_abs)
+    sby_content = generate_sby(args)
 
-    if not os.path.isfile(sby_abs):
-        print(f"ERROR: SBY file not found: {sby_abs}", file=sys.stderr)
-        sys.exit(1)
+    # Write .sby into TEST_TMPDIR so sby output stays in the sandbox
+    tmpdir = os.environ.get("TEST_TMPDIR", tempfile.gettempdir())
+    sby_file = os.path.join(tmpdir, "formal.sby")
+    with open(sby_file, "w") as f:
+        f.write(sby_content)
 
-    print(f"Running formal: {sby_file}")
+    print("Running formal verification")
+    print("Generated .sby configuration:")
+    for line in sby_content.splitlines():
+        print("  " + line)
 
-    # Change to the .sby file's directory so that relative [files]
-    # paths (e.g. ../../rtl/...) resolve correctly.
-    os.chdir(sby_dir)
-
-    result = subprocess.run(
-        [sby_path, "-f", sby_abs],
-        env=os.environ,
-    )
+    os.chdir(tmpdir)
+    result = subprocess.run([sby_path, "-f", sby_file], env=os.environ)
     sys.exit(result.returncode)
 
 
