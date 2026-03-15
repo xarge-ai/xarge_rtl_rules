@@ -16,6 +16,7 @@ filegroup(
         "lint/**/*.py",
         "packaging/**/*.bzl",
         "packaging/**/*.py",
+        "rtl/**/*.bzl",
         "uvm/**/*.bzl",
         "synthesis/**/*.bzl",
         "pnr/**/*.bzl",

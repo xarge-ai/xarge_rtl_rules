@@ -33,6 +33,24 @@ Usage:
 
 _RUN_SBY = Label("//formal:run_sby.py")
 
+def _copy_file_impl(ctx):
+    """Copy a file using expand_template — avoids sandbox symlink issues."""
+    out = ctx.actions.declare_file(ctx.attr.out_name)
+    ctx.actions.expand_template(
+        template = ctx.file.src,
+        output = out,
+        substitutions = {},
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+_copy_file = rule(
+    implementation = _copy_file_impl,
+    attrs = {
+        "src": attr.label(allow_single_file = True, mandatory = True),
+        "out_name": attr.string(mandatory = True),
+    },
+)
+
 def sby_test(
         name,
         properties,
@@ -98,10 +116,21 @@ def sby_test(
     for dep in rtl_deps:
         args.extend(["--rtl", "$(locations {})".format(dep)])
 
+    local_runner = name + "_run_sby.py"
+    copy_target = name + "_copy_runner"
+
+    _copy_file(
+        name = copy_target,
+        src = _RUN_SBY,
+        out_name = local_runner,
+        tags = all_tags,
+    )
+
     native.py_test(
         name = name,
-        srcs = [_RUN_SBY],
-        main = _RUN_SBY,
+        srcs = [":" + copy_target],
+        main = local_runner,
+        precompile = "disabled",
         args = args,
         data = [properties] + rtl_deps,
         tags = all_tags,
