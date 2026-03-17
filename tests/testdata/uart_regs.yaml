@@ -1,0 +1,3 @@
+# Minimal placeholder register map for Corsair rule analysis tests.
+uart_regs:
+  description: placeholder

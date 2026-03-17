@@ -1,0 +1,15 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+load("@xarge_py_deps//:requirements.bzl", "requirement")
+
+package(default_visibility = ["//visibility:public"])
+
+py_binary(
+    name = "workflow_runner",
+    srcs = ["workflow_runner.py"],
+    main = "workflow_runner.py",
+    python_version = "PY3",
+    srcs_version = "PY3",
+    deps = [
+        requirement("corsair"),
+    ],
+)

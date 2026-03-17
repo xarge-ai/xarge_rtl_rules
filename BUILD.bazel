@@ -8,6 +8,9 @@ filegroup(
         "MODULE.bazel",
         "README.md",
     ] + glob([
+        "corsair/**/*.bzl",
+        "corsair/**/*.md",
+        "corsair/**/*.py",
         "cocotb/**/*.bzl",
         "cocotb/**/*.py",
         "formal/**/*.bzl",

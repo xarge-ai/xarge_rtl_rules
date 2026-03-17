@@ -1,0 +1,7 @@
+load(":corsair_generate_test.bzl", "corsair_rule_test_suite")
+
+package(default_visibility = ["//visibility:private"])
+
+corsair_rule_test_suite(
+    name = "corsair_rule_tests",
+)

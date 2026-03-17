@@ -1,0 +1,21 @@
+# Bazel output symlinks and generated directories
+/bazel-*
+
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor and OS noise
+*~
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/

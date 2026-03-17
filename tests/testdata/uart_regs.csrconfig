@@ -1,0 +1,6 @@
+[globcfg]
+data_width = 32
+
+[rtl]
+generator = Verilog
+path = hw/uart_regs.sv
