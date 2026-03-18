@@ -175,6 +175,12 @@ def _build_plan(ctx, cfg_info, source_entries):
 def _cocotb_build_impl(ctx):
     cfg_info = ctx.attr.cfg[CocotbCfgInfo]
     source_entries, source_inputs = _collect_source_inputs(ctx)
+    driver_files_to_run = ctx.attr._cocotb_driver[DefaultInfo].files_to_run
+    driver_sources = depset(
+        transitive = [
+            ctx.attr._cocotb_driver[PyInfo].transitive_sources,
+        ],
+    )
     plan_file = _json_file(
         ctx,
         "{}.build.json".format(ctx.label.name),
@@ -194,9 +200,12 @@ def _cocotb_build_impl(ctx):
             "--stamp-out",
             stamp_file.path,
         ],
-        inputs = depset(direct = [cfg_info.cfg_file, plan_file] + source_inputs),
+        inputs = depset(
+            direct = [cfg_info.cfg_file, plan_file] + source_inputs,
+            transitive = [driver_sources],
+        ),
         outputs = [build_dir_tree, stamp_file],
-        tools = [ctx.executable._cocotb_driver],
+        tools = [driver_files_to_run],
         mnemonic = "CocotbBuild",
         progress_message = "Building CocoTB artifacts for {}".format(ctx.label),
         use_default_shell_env = True,
@@ -284,6 +293,12 @@ fi
 def _cocotb_test_impl(ctx):
     build_info = ctx.attr.build[CocotbBuildInfo]
     dep_sources = _py_dep_sources(ctx)
+    driver_files_to_run = ctx.attr._cocotb_driver[DefaultInfo].files_to_run
+    driver_sources = depset(
+        transitive = [
+            ctx.attr._cocotb_driver[PyInfo].transitive_sources,
+        ],
+    )
     plan_file = _json_file(
         ctx,
         "{}.test.json".format(ctx.label.name),
@@ -308,10 +323,13 @@ def _cocotb_test_impl(ctx):
                 build_info.stamp_file,
                 plan_file,
             ] + ctx.files.test_module,
-            transitive = [dep_sources],
+            transitive = [
+                dep_sources,
+                driver_sources,
+            ],
         ),
         outputs = [results_xml],
-        tools = [ctx.executable._cocotb_driver],
+        tools = [driver_files_to_run],
         mnemonic = "CocotbTest",
         progress_message = "Running CocoTB test {}".format(ctx.label),
         use_default_shell_env = True,

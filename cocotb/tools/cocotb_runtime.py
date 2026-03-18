@@ -139,7 +139,10 @@ def _find_python_roots(paths):
                 marker_index = parts.index(marker)
                 roots.add(str(Path(*parts[:marker_index + 1])))
                 break
-        roots.add(str(path.parent))
+        if path.is_dir():
+            roots.add(str(path))
+        else:
+            roots.add(str(path.parent))
     return sorted(roots)
 
 
@@ -257,10 +260,10 @@ def run_build_plan(plan_path, build_dir, stamp_out):
     return 0
 
 
-def _test_kwargs(plan, build_dir, runtime_dir, results_xml):
+def _test_kwargs(plan, build_dir, test_dir, results_xml):
     kwargs = {
         "build_dir": str(build_dir),
-        "test_dir": str(runtime_dir),
+        "test_dir": str(test_dir),
         "results_xml": str(results_xml),
         "hdl_toplevel": plan["hdl_toplevel"],
         "hdl_toplevel_library": plan["hdl_toplevel_library"],
@@ -288,7 +291,7 @@ def _test_kwargs(plan, build_dir, runtime_dir, results_xml):
     if timescale:
         kwargs["timescale"] = timescale
 
-    log_file = _resolve_log_path(plan.get("log_file"), runtime_dir)
+    log_file = _resolve_log_path(plan.get("log_file"), test_dir)
     if log_file:
         kwargs["log_file"] = log_file
 
@@ -308,7 +311,7 @@ def run_test_plan(plan_path, build_dir, results_xml_out):
     _configure_python_environment(env, plan, tests_dir)
     _configure_cocotb_library_path(env)
 
-    kwargs = _test_kwargs(plan, build_dir, runtime_dir, results_xml)
+    kwargs = _test_kwargs(plan, build_dir, tests_dir, results_xml)
     kwargs["test_module"] = module_names
 
     previous_env = os.environ.copy()

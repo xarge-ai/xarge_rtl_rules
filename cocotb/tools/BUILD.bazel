@@ -13,7 +13,7 @@
 # limitations under the License.
 
 load("@xarge_py_deps//:requirements.bzl", "requirement")
-load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -47,6 +47,17 @@ py_binary(
     python_version = "PY3",
     srcs_version = "PY3",
     visibility = ["//visibility:public"],
+    deps = [
+        ":cocotb_runtime",
+    ],
+)
+
+py_test(
+    name = "cocotb_runtime_test",
+    srcs = ["cocotb_runtime_test.py"],
+    main = "cocotb_runtime_test.py",
+    python_version = "PY3",
+    srcs_version = "PY3",
     deps = [
         ":cocotb_runtime",
     ],
