@@ -57,6 +57,11 @@ verilog_library(
 )
 ```
 
+`publish_root = "registers"` is relative to the current Bazel package.
+
+If you want a workspace-root destination instead, use `//registers/uart` or
+`@project_name/registers/uart`.
+
 `bazel build //path/to:uart_regs` keeps outputs in Bazel's output tree.
 
 `bazel run //path/to:uart_regs_publish` copies the generated files into
@@ -94,6 +99,12 @@ When published, bare output names are categorized automatically:
 
 If an output path already contains a subdirectory such as `hw/uart_regs.sv` or
 `doc/uart_regs.md`, that relative path is preserved under `publish_root`.
+
+`publish_root` forms:
+
+- `registers`: relative to the current Bazel package
+- `//registers/uart`: relative to the workspace root
+- `@project_name/registers/uart`: also relative to the workspace root
 
 ## Optional csrconfig Override
 

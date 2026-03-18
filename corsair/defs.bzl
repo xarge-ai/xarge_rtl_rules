@@ -879,26 +879,50 @@ def _corsair_generate_native_impl(ctx):
         providers.append(verilog_info)
     return providers
 
-def _publish_destination_relpath(relpath, category, publish_root):
-    mapped = relpath
+def _publish_destination_relpath(relpath, category):
     if "/" not in relpath and category in _PUBLISH_CATEGORY_DIRS:
-        mapped = _path_join(_PUBLISH_CATEGORY_DIRS[category], relpath)
-    if publish_root:
-        return _path_join(publish_root, mapped)
-    return mapped
+        return _path_join(_PUBLISH_CATEGORY_DIRS[category], relpath)
+    return relpath
 
 def _workspace_relative_path(package, relpath):
     if package:
         return _path_join(package, relpath)
     return relpath
 
-def _corsair_publish_impl(ctx):
-    publish_root = ctx.attr.publish_root
-    if publish_root:
-        _validate_workspace_relative_path(publish_root, "publish_root")
+def _resolve_publish_root(package, publish_root, workspace_name):
+    _ignore = workspace_name
+    if not publish_root:
+        return package
 
+    if publish_root.startswith("//"):
+        workspace_root = publish_root[2:]
+        if workspace_root:
+            _validate_workspace_relative_path(workspace_root, "publish_root")
+        return workspace_root
+
+    if publish_root.startswith("@"):
+        marker = publish_root[1:]
+        if not marker:
+            fail("publish_root workspace syntax must include a workspace marker, got '@'.")
+        if "//" in marker:
+            parts = marker.split("//", 1)
+            workspace_root = parts[1]
+        elif "/" in marker:
+            parts = marker.split("/", 1)
+            workspace_root = parts[1]
+        else:
+            workspace_root = ""
+        if workspace_root:
+            _validate_workspace_relative_path(workspace_root, "publish_root")
+        return workspace_root
+
+    _validate_workspace_relative_path(publish_root, "publish_root")
+    return _workspace_relative_path(package, publish_root)
+
+def _corsair_publish_impl(ctx):
     info = ctx.attr.src[CorsairInfo]
     package = ctx.attr.src.label.package
+    publish_root = _resolve_publish_root(package, ctx.attr.publish_root, ctx.workspace_name)
     launcher = ctx.actions.declare_file(ctx.label.name)
 
     lines = [
@@ -927,10 +951,9 @@ def _corsair_publish_impl(ctx):
     for relpath in sorted(info.files.keys()):
         file = info.files[relpath]
         category = info.file_categories[relpath]
-        dst_relpath = _workspace_relative_path(
-            package,
-            _publish_destination_relpath(relpath, category, publish_root),
-        )
+        dst_relpath = _publish_destination_relpath(relpath, category)
+        if publish_root:
+            dst_relpath = _path_join(publish_root, dst_relpath)
         lines.extend([
             "src_path=\"${workspace_root}/" + file.short_path + "\"",
             "dst_path=\"${BUILD_WORKSPACE_DIRECTORY}/" + dst_relpath + "\"",
@@ -943,10 +966,9 @@ def _corsair_publish_impl(ctx):
     for relpath in sorted(info.directories.keys()):
         directory = info.directories[relpath]
         category = info.directory_categories[relpath]
-        dst_relpath = _workspace_relative_path(
-            package,
-            _publish_destination_relpath(relpath, category, publish_root),
-        )
+        dst_relpath = _publish_destination_relpath(relpath, category)
+        if publish_root:
+            dst_relpath = _path_join(publish_root, dst_relpath)
         lines.extend([
             "src_path=\"${workspace_root}/" + directory.short_path + "\"",
             "dst_path=\"${BUILD_WORKSPACE_DIRECTORY}/" + dst_relpath + "\"",
@@ -971,7 +993,7 @@ corsair_publish = rule(
             mandatory = True,
         ),
         "publish_root": attr.string(
-            doc = "Optional subdirectory under the target package for checked-in outputs. Bare output names are categorized into hw/sw/doc.",
+            doc = "Optional publish destination. Plain relative paths are package-relative; //foo or @workspace/foo are workspace-root-relative. Bare output names are categorized into hw/sw/doc.",
             default = "",
         ),
     },

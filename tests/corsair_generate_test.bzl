@@ -143,6 +143,30 @@ def _publish_launcher_test_impl(ctx):
 
 _publish_launcher_test = analysistest.make(_publish_launcher_test_impl)
 
+def _publish_workspace_root_launcher_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    target = analysistest.target_under_test(env)
+
+    asserts.equals(
+        env,
+        ["uart_regs_publish_workspace_root_publish"],
+        _sorted_basenames(target[DefaultInfo].files.to_list()),
+    )
+
+    actions = analysistest.target_actions(env)
+    launcher_action = _find_file_write_by_output(actions, "uart_regs_publish_workspace_root_publish")
+
+    asserts.true(env, "registers/uart/hw/uart_regs_publish_workspace_root.v" in launcher_action.content)
+    asserts.true(env, "registers/uart/hw/uart_regs_publish_workspace_root_pkg.sv" in launcher_action.content)
+    asserts.true(env, "registers/uart/sw/uart_regs_publish_workspace_root.h" in launcher_action.content)
+    asserts.true(env, "registers/uart/sw/uart_regs_publish_workspace_root.py" in launcher_action.content)
+    asserts.true(env, "registers/uart/doc/uart_regs_publish_workspace_root.md" in launcher_action.content)
+    asserts.false(env, "tests/registers/uart/" in launcher_action.content)
+
+    return analysistest.end(env)
+
+_publish_workspace_root_launcher_test = analysistest.make(_publish_workspace_root_launcher_test_impl)
+
 def _invalid_attr_test_impl(ctx):
     env = analysistest.begin(ctx)
     asserts.expect_failure(env, "rtl_out requires rtl = True.")
@@ -180,6 +204,14 @@ def corsair_rule_test_suite(name):
         publish_root = "registers",
     )
 
+    corsair_generate(
+        name = "uart_regs_publish_workspace_root",
+        regmap = "testdata/uart_regs.yaml",
+        markdown = True,
+        publish = True,
+        publish_root = "@project_name/registers/uart",
+    )
+
     corsair_snapshot_manifest(
         name = "uart_regs_manifest",
         src = ":uart_regs_minimal",
@@ -205,6 +237,11 @@ def corsair_rule_test_suite(name):
         target_under_test = ":uart_regs_publish_enabled_publish",
     )
 
+    _publish_workspace_root_launcher_test(
+        name = "corsair_publish_workspace_root_launcher_test",
+        target_under_test = ":uart_regs_publish_workspace_root_publish",
+    )
+
     _invalid_attr_test(
         name = "corsair_generate_invalid_attr_test",
         target_under_test = ":uart_regs_invalid_rtl_out",
@@ -217,6 +254,7 @@ def corsair_rule_test_suite(name):
             ":corsair_generate_csrconfig_test",
             ":corsair_snapshot_manifest_test",
             ":corsair_publish_launcher_test",
+            ":corsair_publish_workspace_root_launcher_test",
             ":corsair_generate_invalid_attr_test",
         ],
     )
