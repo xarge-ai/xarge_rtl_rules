@@ -14,6 +14,18 @@ def _find_actions(actions, mnemonic):
         ))
     return matches
 
+def _find_file_write_by_output(actions, basename):
+    matches = []
+    for action in actions:
+        if action.mnemonic != "FileWrite":
+            continue
+        output_basenames = _sorted_basenames(action.outputs.to_list())
+        if basename in output_basenames:
+            matches.append(action)
+    if not matches:
+        fail("Did not find FileWrite action for %r." % basename)
+    return matches[0]
+
 def _minimal_generate_test_impl(ctx):
     env = analysistest.begin(ctx)
     target = analysistest.target_under_test(env)
@@ -105,6 +117,32 @@ def _snapshot_manifest_test_impl(ctx):
 
 _snapshot_manifest_test = analysistest.make(_snapshot_manifest_test_impl)
 
+def _publish_launcher_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    target = analysistest.target_under_test(env)
+
+    asserts.equals(
+        env,
+        ["uart_regs_publish_enabled_publish"],
+        _sorted_basenames(target[DefaultInfo].files.to_list()),
+    )
+
+    actions = analysistest.target_actions(env)
+    launcher_action = _find_file_write_by_output(actions, "uart_regs_publish_enabled_publish")
+
+    asserts.true(env, "BUILD_WORKSPACE_DIRECTORY" in launcher_action.content)
+    asserts.true(env, "RUNFILES_DIR" in launcher_action.content)
+    asserts.true(env, "tests/registers/hw/uart_regs_publish_enabled.v" in launcher_action.content)
+    asserts.true(env, "tests/registers/hw/uart_regs_publish_enabled_pkg.sv" in launcher_action.content)
+    asserts.true(env, "tests/registers/sw/uart_regs_publish_enabled.h" in launcher_action.content)
+    asserts.true(env, "tests/registers/sw/uart_regs_publish_enabled.py" in launcher_action.content)
+    asserts.true(env, "tests/registers/doc/uart_regs_publish_enabled.md" in launcher_action.content)
+    asserts.true(env, "tests/registers/doc/uart_regs_publish_enabled_img" in launcher_action.content)
+
+    return analysistest.end(env)
+
+_publish_launcher_test = analysistest.make(_publish_launcher_test_impl)
+
 def _invalid_attr_test_impl(ctx):
     env = analysistest.begin(ctx)
     asserts.expect_failure(env, "rtl_out requires rtl = True.")
@@ -134,6 +172,14 @@ def corsair_rule_test_suite(name):
         rtl_out = "unexpected.v",
     )
 
+    corsair_generate(
+        name = "uart_regs_publish_enabled",
+        regmap = "testdata/uart_regs.yaml",
+        markdown = True,
+        publish = True,
+        publish_root = "registers",
+    )
+
     corsair_snapshot_manifest(
         name = "uart_regs_manifest",
         src = ":uart_regs_minimal",
@@ -154,6 +200,11 @@ def corsair_rule_test_suite(name):
         target_under_test = ":uart_regs_manifest",
     )
 
+    _publish_launcher_test(
+        name = "corsair_publish_launcher_test",
+        target_under_test = ":uart_regs_publish_enabled_publish",
+    )
+
     _invalid_attr_test(
         name = "corsair_generate_invalid_attr_test",
         target_under_test = ":uart_regs_invalid_rtl_out",
@@ -165,6 +216,7 @@ def corsair_rule_test_suite(name):
             ":corsair_generate_minimal_test",
             ":corsair_generate_csrconfig_test",
             ":corsair_snapshot_manifest_test",
+            ":corsair_publish_launcher_test",
             ":corsair_generate_invalid_attr_test",
         ],
     )

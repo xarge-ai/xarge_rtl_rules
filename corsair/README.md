@@ -11,17 +11,20 @@ Load the rules from `@xarge_rtl_rules//corsair:defs.bzl`:
 load(
     "@xarge_rtl_rules//corsair:defs.bzl",
     "corsair_generate",
+    "corsair_publish",
     "corsair_workflow",
 )
 ```
 
-- `corsair_generate`: simple rule that mirrors `corsair -r regs.yaml -c csrconfig`
+- `corsair_generate`: Bazel-native register generation with built-in output selection
+- `corsair_publish`: runnable helper that copies generated artifacts into repo-local check-in paths
 - `corsair_workflow`: advanced rule for custom Python API-driven flows
 
 ## Simple Usage
 
-`corsair_generate` is the default interface. Users only provide a register map,
-a `csrconfig`, and the outputs they want to expose through Bazel.
+`corsair_generate` is the default interface. Users describe which standard
+artifacts they want, optionally override output paths, and Bazel declares the
+resulting files directly.
 
 ```starlark
 load("@xarge_rtl_rules//corsair:defs.bzl", "corsair_generate")
@@ -30,26 +33,72 @@ load("@xarge_rtl_rules//rtl:defs.bzl", "verilog_library")
 corsair_generate(
     name = "uart_regs",
     regmap = "regs.yaml",
-    csrconfig = "csrconfig",
-    outs = [
-        "uart_regs.sv",
-        "uart_regs_pkg.sv",
-        "uart_regs.svh",
-        "uart_regs.md",
-    ],
-    out_dirs = ["uart_regs_img"],
+    rtl = True,
+    sv_pkg = True,
+    c_header = True,
+    python_module = True,
+    markdown = True,
+    rtl_out = "hw/uart_regs.sv",
+    sv_pkg_out = "hw/uart_regs_pkg.sv",
+    c_header_out = "sw/uart_regs.h",
+    python_out = "sw/uart_regs.py",
+    markdown_out = "doc/uart_regs.md",
+    publish = True,
+    publish_root = "registers",
 )
 
 verilog_library(
     name = "uart_regs_rtl",
     srcs = [
-        ":uart_regs.sv",
-        ":uart_regs_pkg.sv",
-        ":uart_regs.svh",
+        ":hw/uart_regs.sv",
+        ":hw/uart_regs_pkg.sv",
     ],
-    includes = ["."],
+    includes = ["hw"],
 )
 ```
+
+`bazel build //path/to:uart_regs` keeps outputs in Bazel's output tree.
+
+`bazel run //path/to:uart_regs_publish` copies the generated files into
+`registers/hw`, `registers/sw`, and `registers/doc` under the package for
+check-in.
+
+If you prefer to wire publishing explicitly instead of using `publish = True`,
+use `corsair_publish` directly:
+
+```starlark
+load(
+    "@xarge_rtl_rules//corsair:defs.bzl",
+    "corsair_generate",
+    "corsair_publish",
+)
+
+corsair_generate(
+    name = "uart_regs",
+    regmap = "regs.yaml",
+    markdown = True,
+)
+
+corsair_publish(
+    name = "uart_regs_checkin",
+    src = ":uart_regs",
+    publish_root = "registers",
+)
+```
+
+When published, bare output names are categorized automatically:
+
+- RTL, SV packages, and Verilog headers go to `hw/`
+- C headers and Python modules go to `sw/`
+- Markdown, Asciidoc, image directories, and dump files go to `doc/`
+
+If an output path already contains a subdirectory such as `hw/uart_regs.sv` or
+`doc/uart_regs.md`, that relative path is preserved under `publish_root`.
+
+## Optional csrconfig Override
+
+`corsair_generate` can also merge a native `csrconfig` when you want to keep
+using existing Corsair config files while still exposing Bazel-native outputs.
 
 Example `csrconfig`:
 
@@ -82,13 +131,9 @@ title = UART Register Map
 image_dir = uart_regs_img
 ```
 
-`outs` and `out_dirs` can be declared in two ways:
-
-- Exact generated path, such as `hw/uart_regs.sv` or `doc/uart_regs_img`
-- Unique basename, such as `uart_regs.sv` or `uart_regs_img`
-
-Using basenames keeps the BUILD rule small while still letting `csrconfig`
-organize files into subdirectories.
+`csrconfig` support in `corsair_generate` is intentionally limited to naming
+and built-in generator selection. For arbitrary native layouts, use
+`corsair_generate_raw`.
 
 ## Advanced Workflow Usage
 
@@ -147,7 +192,7 @@ the function name with the rule's `function` attribute.
 
 ## Notes
 
-- Declare every generated file in `outs` and every generated directory in `out_dirs`.
 - `corsair_generate` supports built-in Corsair generators with relative output paths.
+- `corsair_publish` is intended for `bazel run` check-in flows, not normal `bazel build`s.
 - Use `corsair_workflow` for custom Python generators or more advanced flow control.
 - The Bazel-managed dependency is pinned to `corsair==1.0.4`.

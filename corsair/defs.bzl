@@ -18,6 +18,7 @@ Corsair register-generation rules.
 Public entrypoints:
 
 - corsair_generate: Bazel-native CSR generation rule with deterministic build outputs
+- corsair_publish: runnable helper that copies generated outputs into repo-local check-in paths
 - corsair_snapshot_manifest: emits a manifest describing generated build outputs
 - corsair_generate_raw: compatibility rule for direct csrconfig + declared outs/out_dirs
 - corsair_workflow: advanced Python API-oriented rule for custom workflows
@@ -116,6 +117,16 @@ _TARGET_GENERATOR_INFO = {
 
 _DOC_GENERATORS = ["Markdown", "Asciidoc"]
 
+_PUBLISH_CATEGORY_DIRS = {
+    "rtl": "hw",
+    "sv": "hw",
+    "headers": "hw",
+    "c": "sw",
+    "python": "sw",
+    "docs": "doc",
+    "data": "doc",
+}
+
 def _empty_category_buckets():
     return {
         "rtl": [],
@@ -159,6 +170,14 @@ def _validate_relative_path(path, attr_name):
 def _validate_optional_output_path(path, attr_name):
     if path:
         _validate_relative_path(path, attr_name)
+
+def _validate_workspace_relative_path(path, attr_name):
+    if not path:
+        fail("%s must not be empty." % attr_name)
+    if path.startswith("/"):
+        fail("%s must be a relative path, got '%s'." % (attr_name, path))
+    if path == ".." or path.startswith("../") or "/../" in path or path.endswith("/.."):
+        fail("%s must stay within the workspace tree, got '%s'." % (attr_name, path))
 
 def _validate_keyword_or_int(value, attr_name, allowed_keywords):
     if not value:
@@ -208,6 +227,9 @@ def _json_escape(value):
 def _render_json(value, indent = ""):
     _ignore = indent
     return json.encode_indent(value)
+
+def _shell_quote(value):
+    return "'" + value.replace("'", "'\"'\"'") + "'"
 
 def _package_bin_dir(ctx):
     if ctx.label.package:
@@ -857,6 +879,106 @@ def _corsair_generate_native_impl(ctx):
         providers.append(verilog_info)
     return providers
 
+def _publish_destination_relpath(relpath, category, publish_root):
+    mapped = relpath
+    if "/" not in relpath and category in _PUBLISH_CATEGORY_DIRS:
+        mapped = _path_join(_PUBLISH_CATEGORY_DIRS[category], relpath)
+    if publish_root:
+        return _path_join(publish_root, mapped)
+    return mapped
+
+def _workspace_relative_path(package, relpath):
+    if package:
+        return _path_join(package, relpath)
+    return relpath
+
+def _corsair_publish_impl(ctx):
+    publish_root = ctx.attr.publish_root
+    if publish_root:
+        _validate_workspace_relative_path(publish_root, "publish_root")
+
+    info = ctx.attr.src[CorsairInfo]
+    package = ctx.attr.src.label.package
+    launcher = ctx.actions.declare_file(ctx.label.name)
+
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        "if [[ -z \"${BUILD_WORKSPACE_DIRECTORY:-}\" ]]; then",
+        "  echo \"error: BUILD_WORKSPACE_DIRECTORY is not set. Run this target with 'bazel run'.\" >&2",
+        "  exit 1",
+        "fi",
+        "",
+        "if [[ -n \"${RUNFILES_DIR:-}\" ]]; then",
+        "  runfiles_dir=\"${RUNFILES_DIR}\"",
+        "elif [[ -d \"$0.runfiles\" ]]; then",
+        "  runfiles_dir=\"$0.runfiles\"",
+        "else",
+        "  echo \"error: failed to locate Bazel runfiles directory.\" >&2",
+        "  exit 1",
+        "fi",
+        "",
+        "runfiles_workspace=" + _shell_quote(ctx.workspace_name),
+        "workspace_root=\"${runfiles_dir}/${runfiles_workspace}\"",
+        "",
+    ]
+
+    for relpath in sorted(info.files.keys()):
+        file = info.files[relpath]
+        category = info.file_categories[relpath]
+        dst_relpath = _workspace_relative_path(
+            package,
+            _publish_destination_relpath(relpath, category, publish_root),
+        )
+        lines.extend([
+            "src_path=\"${workspace_root}/" + file.short_path + "\"",
+            "dst_path=\"${BUILD_WORKSPACE_DIRECTORY}/" + dst_relpath + "\"",
+            "mkdir -p \"$(dirname \"$dst_path\")\"",
+            "cp \"$src_path\" \"$dst_path\"",
+            "printf 'published %s\\n' " + _shell_quote(dst_relpath),
+            "",
+        ])
+
+    for relpath in sorted(info.directories.keys()):
+        directory = info.directories[relpath]
+        category = info.directory_categories[relpath]
+        dst_relpath = _workspace_relative_path(
+            package,
+            _publish_destination_relpath(relpath, category, publish_root),
+        )
+        lines.extend([
+            "src_path=\"${workspace_root}/" + directory.short_path + "\"",
+            "dst_path=\"${BUILD_WORKSPACE_DIRECTORY}/" + dst_relpath + "\"",
+            "rm -rf \"$dst_path\"",
+            "mkdir -p \"$(dirname \"$dst_path\")\"",
+            "cp -R \"$src_path\" \"$dst_path\"",
+            "printf 'published %s\\n' " + _shell_quote(dst_relpath),
+            "",
+        ])
+
+    ctx.actions.write(launcher, "\n".join(lines), is_executable = True)
+
+    runfiles = ctx.runfiles(files = info.all_files.to_list() + info.all_directories.to_list())
+    return [DefaultInfo(executable = launcher, runfiles = runfiles)]
+
+corsair_publish = rule(
+    implementation = _corsair_publish_impl,
+    attrs = {
+        "src": attr.label(
+            doc = "A corsair_generate, corsair_generate_raw, or corsair_workflow target to publish.",
+            providers = [CorsairInfo],
+            mandatory = True,
+        ),
+        "publish_root": attr.string(
+            doc = "Optional subdirectory under the target package for checked-in outputs. Bare output names are categorized into hw/sw/doc.",
+            default = "",
+        ),
+    },
+    executable = True,
+    doc = "Copy generated Corsair outputs from Bazel runfiles into repo-local check-in paths via bazel run.",
+)
+
 _corsair_generate_native_rule = rule(
     implementation = _corsair_generate_native_impl,
     attrs = {
@@ -1192,13 +1314,21 @@ def corsair_generate(
         yaml_out = None,
         txt_out = None,
         targets = None,
+        publish = False,
+        publish_name = None,
+        publish_root = None,
         **kwargs):
     """Public Bazel-native Corsair rule.
 
     This macro keeps `corsair_generate` focused on deterministic Bazel outputs.
-    Checked-in source snapshots should be handled separately via
-    `corsair_snapshot_manifest` plus repo-local updater/check tooling.
+    Checked-in source snapshots can be handled via `corsair_publish`, or by
+    setting `publish = True` to auto-create a runnable publish target.
     """
+    if publish_name != None and not publish:
+        fail("publish_name requires publish = True.")
+    if publish_root != None and not publish:
+        fail("publish_root requires publish = True.")
+
     _corsair_generate_native_rule(
         name = name,
         regmap = regmap,
@@ -1242,5 +1372,15 @@ def corsair_generate(
         targets = targets or {},
         **kwargs
     )
+
+    if publish:
+        resolved_publish_name = publish_name if publish_name != None else name + "_publish"
+        if resolved_publish_name == name:
+            fail("publish target name must differ from the generation target name.")
+        corsair_publish(
+            name = resolved_publish_name,
+            src = ":" + name,
+            publish_root = _encode_optional_string(publish_root),
+        )
 
 corsair_script_generate = corsair_workflow
