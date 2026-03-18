@@ -1,4 +1,4 @@
-# Copyright 2023 Antmicro
+# Copyright 2026 Xarge AI
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +13,19 @@
 # limitations under the License.
 
 load("@xarge_py_deps//:requirements.bzl", "requirement")
-load("@rules_python//python:defs.bzl", "py_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(
     default_visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "cocotb_runtime",
+    srcs = ["cocotb_runtime.py"],
+    deps = [
+        requirement("cocotb"),
+        requirement("cocotbext-axi"),
+    ],
 )
 
 py_binary(
@@ -27,8 +36,7 @@ py_binary(
     srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
-        requirement("cocotb"),
-        requirement("cocotbext-axi"),
+        ":cocotb_runtime",
     ],
 )
 
@@ -40,8 +48,7 @@ py_binary(
     srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
-        requirement("cocotb"),
-        requirement("cocotbext-axi"),
+        ":cocotb_runtime",
     ],
 )
 

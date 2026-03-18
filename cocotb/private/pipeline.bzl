@@ -1,4 +1,4 @@
-# Copyright 2023 Antmicro
+# Copyright 2026 Xarge AI
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,218 +12,200 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Pipeline-based CocoTB rules for build/test separation.
-
-This enables building once and running multiple tests against the same build output,
-with proper Bazel caching. Use these rules when you need to run multiple test
-configurations against the same HDL build.
-
-For single test scenarios, the legacy cocotb_build_test from cocotb_tools.bzl
-may be more convenient.
-"""
+"""CocoTB pipeline rules for xarge_rtl_rules."""
 
 load("@rules_python//python:defs.bzl", "PyInfo")
 
-# Providers for passing information between pipeline stages
-
 CocotbCfgInfo = provider(
-    "Configuration for CocoTB simulator pipeline",
+    doc = "Configuration for a CocoTB simulator pipeline.",
     fields = {
-        "simulator": "Simulator name (e.g., 'verilator', 'icarus')",
-        "cfg_file": "Configuration file with simulator settings",
+        "cfg_file": "JSON manifest describing the simulator selection.",
+        "simulator": "Simulator name passed to the CocoTB runner.",
     },
 )
 
 CocotbBuildInfo = provider(
-    "Build output from CocoTB build stage",
+    doc = "Build output from the CocoTB compile stage.",
     fields = {
-        "simulator": "Simulator name used for build",
-        "build_dir_tree": "Directory tree artifact containing build outputs",
-        "stamp_file": "Stamp file indicating successful build",
-        "hdl_toplevel": "HDL toplevel module name",
-        "hdl_library": "HDL library name",
+        "build_dir_tree": "Tree artifact containing simulator build outputs.",
+        "hdl_library": "HDL library used for the compiled design.",
+        "hdl_toplevel": "HDL toplevel module name used during build.",
+        "simulator": "Simulator name used for the compiled design.",
+        "stamp_file": "Marker file written when the build completes successfully.",
     },
 )
 
-# Helper functions
-
-def _write_kwargs_file(ctx, kwargs, filename):
-    """
-    Write kwargs to a file in a simple format that Python can parse.
-    
-    Since Starlark doesn't handle recursive JSON well, we'll write in a 
-    format that Python can easily convert to proper JSON.
-    """
-    
-    # Convert to a simple key=value format that Python can parse
-    lines = []
-    for k, v in kwargs.items():
-        # Convert value to string representation
-        if type(v) == "list":
-            # Convert list to Python list string
-            items = []
-            for item in v:
-                if type(item) == "string":
-                    items.append('"{}"'.format(item.replace('\\', '\\\\').replace('"', '\\"')))
-                else:
-                    items.append(str(item))
-            value_str = "[{}]".format(",".join(items))
-        elif type(v) == "dict":
-            # Convert dict to Python dict string
-            items = []
-            for dk in v:
-                dv = v[dk]
-                if type(dv) == "string":
-                    dv_str = '"{}"'.format(dv.replace('\\', '\\\\').replace('"', '\\"'))
-                else:
-                    dv_str = str(dv)
-                if type(dk) == "string":
-                    dk_str = '"{}"'.format(dk.replace('\\', '\\\\').replace('"', '\\"'))
-                else:
-                    dk_str = str(dk)
-                items.append("{}:{}".format(dk_str, dv_str))
-            value_str = "{{{0}}}".format(",".join(items))
-        elif type(v) == "string":
-            value_str = '"{}"'.format(v.replace('\\', '\\\\').replace('"', '\\"'))
-        elif type(v) == "bool":
-            value_str = "true" if v else "false"
-        else:
-            value_str = str(v)
-        
-        lines.append("{}={}".format(k, value_str))
-    
-    content = "\n".join(lines)
-    
-    kwargs_file = ctx.actions.declare_file(filename)
+def _json_file(ctx, filename, value):
+    out = ctx.actions.declare_file(filename)
     ctx.actions.write(
-        output = kwargs_file,
-        content = content,
+        output = out,
+        content = json.encode_indent(value) + "\n",
     )
-    
-    return kwargs_file
+    return out
 
-def _collect_file_paths(files, prefix = ""):
-    """Collect file paths from a list of File objects, optionally with prefix tag."""
-    paths = []
-    for f in files:
-        path = f.path if hasattr(f, "path") else f.short_path
-        if prefix:
-            paths.append("{}:{}".format(prefix, path))
-        else:
-            paths.append(path)
-    return paths
+def _file_entry(file, kind = ""):
+    entry = {
+        "basename": file.basename,
+        "path": file.path,
+        "short_path": file.short_path,
+    }
+    if kind:
+        entry["kind"] = kind
+    return entry
 
-def _merge_file_lists(*file_lists):
-    """Merge multiple lists of files, removing duplicates."""
+def _classify_generic_source(file):
+    lowered = file.basename.lower()
+    if lowered.endswith(".vlt"):
+        return "verilator_control"
+    if lowered.endswith(".vhd") or lowered.endswith(".vhdl"):
+        return "vhdl"
+    return "verilog"
+
+def _append_source(entries, inputs, seen, file, kind):
+    if file.path in seen:
+        return
+    seen[file.path] = True
+    inputs.append(file)
+    entries.append(_file_entry(file, kind = kind))
+
+def _collect_source_inputs(ctx):
     seen = {}
-    result = []
-    for file_list in file_lists:
-        for f in file_list:
-            path = f.path if hasattr(f, "path") else f.short_path
-            if path not in seen:
-                seen[path] = True
-                result.append(f)
-    return result
+    entries = []
+    inputs = []
 
-# Rule implementations
+    for file in ctx.files.verilog_sources:
+        _append_source(entries, inputs, seen, file, "verilog")
+    for file in ctx.files.vhdl_sources:
+        _append_source(entries, inputs, seen, file, "vhdl")
+    for file in ctx.files.sources:
+        _append_source(entries, inputs, seen, file, _classify_generic_source(file))
+
+    return entries, inputs
+
+def _module_name(file):
+    if file.basename.endswith(".py"):
+        return file.basename[:-3]
+    return file.basename
+
+def _test_module_entries(files):
+    entries = []
+    for file in files:
+        entry = _file_entry(file)
+        entry["module_name"] = _module_name(file)
+        entries.append(entry)
+    return entries
+
+def _py_dep_sources(ctx):
+    return depset(
+        transitive = [
+            dep[PyInfo].transitive_sources
+            for dep in ctx.attr.deps
+            if PyInfo in dep
+        ],
+    )
+
+def _py_dep_entries(dep_sources):
+    return [_file_entry(file) for file in dep_sources.to_list()]
+
+def _optional_string(value):
+    if value:
+        return value
+    return None
+
+def _optional_list(value):
+    if value:
+        return value
+    return None
+
+def _timescale_value(value):
+    if not value:
+        return None
+    if len(value) != 2:
+        fail("timescale must contain exactly two entries, for example ['1ns', '1ps']")
+    return value
+
+def _cfg_manifest(ctx):
+    simulator = ctx.attr.simulator.strip()
+    if not simulator:
+        fail("simulator must be a non-empty string")
+    return {
+        "label": str(ctx.label),
+        "simulator": simulator,
+    }
 
 def _cocotb_cfg_impl(ctx):
-    """Implementation for cocotb_cfg rule."""
-    
-    # Create a simple configuration file (simple key=value format)
-    cfg_content = 'simulator="{0}"\nversion="1.0"\n'.format(ctx.attr.simulator)
-    
-    cfg_file = ctx.actions.declare_file("{}.cfg.txt".format(ctx.label.name))
-    ctx.actions.write(
-        output = cfg_file,
-        content = cfg_content,
-    )
-    
+    manifest = _cfg_manifest(ctx)
+    cfg_file = _json_file(ctx, "{}.cfg.json".format(ctx.label.name), manifest)
     return [
         DefaultInfo(files = depset([cfg_file])),
         CocotbCfgInfo(
-            simulator = ctx.attr.simulator,
+            simulator = manifest["simulator"],
             cfg_file = cfg_file,
         ),
     ]
 
-def _cocotb_build_impl(ctx):
-    """Implementation for cocotb_build rule."""
-    
-    cfg_info = ctx.attr.cfg[CocotbCfgInfo]
-    simulator = cfg_info.simulator
-    
-    # Collect all source files
-    verilog_files = ctx.files.verilog_sources
-    vhdl_files = ctx.files.vhdl_sources
-    generic_files = ctx.files.sources
-    all_source_files = _merge_file_lists(verilog_files, vhdl_files, generic_files)
-    
-    # Create tagged source paths for the driver
-    tagged_sources = []
-    tagged_sources.extend(_collect_file_paths(verilog_files, "VERILOG"))
-    tagged_sources.extend(_collect_file_paths(vhdl_files, "VHDL"))
-    tagged_sources.extend(_collect_file_paths(generic_files))  # Untagged = Verilog
-    
-    # Prepare build kwargs for JSON serialization
-    build_kwargs = {
+def _build_plan(ctx, cfg_info, source_entries):
+    plan = {
+        "cfg_file": cfg_info.cfg_file.path,
         "hdl_library": ctx.attr.hdl_library,
-        "sources": tagged_sources,
+        "hdl_toplevel": ctx.attr.hdl_toplevel,
+        "label": str(ctx.label),
+        "simulator": cfg_info.simulator,
+        "sources": source_entries,
+        "build_args": ctx.attr.build_args,
         "includes": ctx.attr.includes,
         "defines": ctx.attr.defines,
         "parameters": ctx.attr.parameters,
-        "build_args": ctx.attr.build_args,
-        "hdl_toplevel": ctx.attr.hdl_toplevel,
         "always": ctx.attr.always,
         "clean": ctx.attr.clean,
         "verbose": ctx.attr.verbose,
         "waves": ctx.attr.waves,
     }
-    
-    # Add optional parameters
-    if ctx.attr.timescale:
-        build_kwargs["timescale"] = ctx.attr.timescale
-    if ctx.attr.log_file:
-        build_kwargs["log_file"] = ctx.attr.log_file
-    
-    # Create build kwargs file  
-    build_kwargs_file = _write_kwargs_file(ctx, build_kwargs, "{}.build_kwargs.txt".format(ctx.label.name))
-    
-    # Declare output artifacts
+
+    timescale = _timescale_value(ctx.attr.timescale)
+    if timescale:
+        plan["timescale"] = timescale
+
+    log_file = _optional_string(ctx.attr.log_file)
+    if log_file:
+        plan["log_file"] = log_file
+
+    return plan
+
+def _cocotb_build_impl(ctx):
+    cfg_info = ctx.attr.cfg[CocotbCfgInfo]
+    source_entries, source_inputs = _collect_source_inputs(ctx)
+    plan_file = _json_file(
+        ctx,
+        "{}.build.json".format(ctx.label.name),
+        _build_plan(ctx, cfg_info, source_entries),
+    )
     build_dir_tree = ctx.actions.declare_directory("{}_build".format(ctx.label.name))
     stamp_file = ctx.actions.declare_file("{}.build.ok".format(ctx.label.name))
-    
-    # Get python toolchain
-    py_toolchain = ctx.toolchains["@rules_python//python:toolchain_type"].py3_runtime
-    
-    # Run the build directly with environment inheritance
+
     ctx.actions.run(
         executable = ctx.executable._cocotb_driver,
         arguments = [
-            "--mode", "build",
-            "--simulator", simulator,
-            "--build-dir", build_dir_tree.path,
-            "--build-kwargs-txt", build_kwargs_file.path,
-            "--stamp-out", stamp_file.path
+            "build",
+            "--plan",
+            plan_file.path,
+            "--build-dir",
+            build_dir_tree.path,
+            "--stamp-out",
+            stamp_file.path,
         ],
-        inputs = depset(
-            direct = [cfg_info.cfg_file, build_kwargs_file] + all_source_files,
-            transitive = [
-                ctx.attr._cocotb_driver[PyInfo].transitive_sources,
-                py_toolchain.files,
-            ],
-        ),
+        inputs = depset(direct = [cfg_info.cfg_file, plan_file] + source_inputs),
         outputs = [build_dir_tree, stamp_file],
+        tools = [ctx.executable._cocotb_driver],
         mnemonic = "CocotbBuild",
-        progress_message = "Building CocoTB simulation for {}".format(ctx.label.name),
-        use_default_shell_env = True,  # Inherit PATH and other environment variables
+        progress_message = "Building CocoTB artifacts for {}".format(ctx.label),
+        use_default_shell_env = True,
     )
-    
+
     return [
         DefaultInfo(files = depset([build_dir_tree, stamp_file])),
         CocotbBuildInfo(
-            simulator = simulator,
+            simulator = cfg_info.simulator,
             build_dir_tree = build_dir_tree,
             stamp_file = stamp_file,
             hdl_toplevel = ctx.attr.hdl_toplevel,
@@ -231,31 +213,16 @@ def _cocotb_build_impl(ctx):
         ),
     ]
 
-def _cocotb_test_impl(ctx):
-    """Implementation for cocotb_test rule."""
-    
-    build_info = ctx.attr.build[CocotbBuildInfo]
-    simulator = build_info.simulator
-    
-    # Use hdl_toplevel from build if not overridden
-    hdl_toplevel = ctx.attr.hdl_toplevel or build_info.hdl_toplevel
-    hdl_toplevel_library = ctx.attr.hdl_toplevel_library or build_info.hdl_library
-    
-    # Collect test module files
-    test_module_files = ctx.files.test_module
-    test_module_names = []
-    for f in test_module_files:
-        name = f.basename
-        if name.endswith(".py"):
-            name = name[:-3]  # Remove .py extension
-        test_module_names.append(name)
-    
-    # Prepare test kwargs for JSON serialization
-    test_kwargs = {
-        "test_module": test_module_names,
-        "hdl_toplevel": hdl_toplevel,
-        "hdl_toplevel_library": hdl_toplevel_library,
+def _test_plan(ctx, build_info, dep_entries):
+    plan = {
+        "build_hdl_library": build_info.hdl_library,
+        "build_hdl_toplevel": build_info.hdl_toplevel,
+        "hdl_toplevel": _optional_string(ctx.attr.hdl_toplevel) or build_info.hdl_toplevel,
         "hdl_toplevel_lang": ctx.attr.hdl_toplevel_lang,
+        "hdl_toplevel_library": _optional_string(ctx.attr.hdl_toplevel_library) or build_info.hdl_library,
+        "label": str(ctx.label),
+        "simulator": build_info.simulator,
+        "test_modules": _test_module_entries(ctx.files.test_module),
         "gpi_interfaces": ctx.attr.gpi_interfaces,
         "testcase": ctx.attr.testcase,
         "elab_args": ctx.attr.elab_args,
@@ -265,110 +232,92 @@ def _cocotb_test_impl(ctx):
         "waves": ctx.attr.waves,
         "gui": ctx.attr.gui,
         "parameters": ctx.attr.parameters,
+        "python_sources": dep_entries,
         "verbose": ctx.attr.verbose,
     }
-    
-    # Add optional parameters
-    if ctx.attr.seed:
-        test_kwargs["seed"] = ctx.attr.seed
-    if ctx.attr.timescale:
-        test_kwargs["timescale"] = ctx.attr.timescale
-    if ctx.attr.log_file:
-        test_kwargs["log_file"] = ctx.attr.log_file
-    if ctx.attr.pre_cmd:
-        test_kwargs["pre_cmd"] = ctx.attr.pre_cmd
-    if ctx.attr.test_filter:
-        test_kwargs["test_filter"] = ctx.attr.test_filter
-    
-    # Create test kwargs file
-    test_kwargs_file = _write_kwargs_file(ctx, test_kwargs, "{}.test_kwargs.txt".format(ctx.label.name))
-    
-    # Create test directory with test modules  
-    # Based on CocoTB runner source, the test should run from test_dir
-    # which contains the Python test modules, with build_dir referencing
-    # the compiled simulation artifacts
-    test_dir = ctx.actions.declare_directory("{}_test_dir".format(ctx.label.name))
-    
-    # Copy test modules to the test directory  
-    ctx.actions.run_shell(
-        command = """
-        mkdir -p {test_dir}
-        for module in {modules}; do
-            cp "$module" {test_dir}/
-        done
-        """.format(
-            test_dir = test_dir.path,
-            modules = " ".join([f.path for f in test_module_files]),
-        ),
-        inputs = test_module_files,
-        outputs = [test_dir],
-        mnemonic = "CreateTestDir",
-        progress_message = "Creating test directory for {}".format(ctx.label.name),
+
+    seed = _optional_string(ctx.attr.seed)
+    if seed:
+        plan["seed"] = seed
+
+    timescale = _timescale_value(ctx.attr.timescale)
+    if timescale:
+        plan["timescale"] = timescale
+
+    log_file = _optional_string(ctx.attr.log_file)
+    if log_file:
+        plan["log_file"] = log_file
+
+    pre_cmd = _optional_list(ctx.attr.pre_cmd)
+    if pre_cmd:
+        plan["pre_cmd"] = pre_cmd
+
+    test_filter = _optional_string(ctx.attr.test_filter)
+    if test_filter:
+        plan["test_filter"] = test_filter
+
+    return plan
+
+def _test_script(ctx, results_xml):
+    script = ctx.actions.declare_file("{}_test.sh".format(ctx.label.name))
+    content = """#!/usr/bin/env bash
+set -euo pipefail
+
+RESULTS_SHORT_PATH="{results_short_path}"
+RUNFILE_PATH=""
+if [[ -n "${{TEST_SRCDIR:-}}" && -n "${{TEST_WORKSPACE:-}}" ]]; then
+  RUNFILE_PATH="${{TEST_SRCDIR}}/${{TEST_WORKSPACE}}/${{RESULTS_SHORT_PATH}}"
+fi
+
+if [[ -n "$RUNFILE_PATH" && -f "$RUNFILE_PATH" ]]; then
+  cp "$RUNFILE_PATH" "${{XML_OUTPUT_FILE:-results.xml}}"
+elif [[ -f "$RESULTS_SHORT_PATH" ]]; then
+  cp "$RESULTS_SHORT_PATH" "${{XML_OUTPUT_FILE:-results.xml}}"
+else
+  echo "missing CocoTB results file: $RESULTS_SHORT_PATH" >&2
+  exit 1
+fi
+""".format(results_short_path = results_xml.short_path)
+    ctx.actions.write(output = script, content = content, is_executable = True)
+    return script
+
+def _cocotb_test_impl(ctx):
+    build_info = ctx.attr.build[CocotbBuildInfo]
+    dep_sources = _py_dep_sources(ctx)
+    plan_file = _json_file(
+        ctx,
+        "{}.test.json".format(ctx.label.name),
+        _test_plan(ctx, build_info, _py_dep_entries(dep_sources)),
     )
-    
-    # Declare output artifacts
     results_xml = ctx.actions.declare_file("{}.results.xml".format(ctx.label.name))
-    
-    # Get python toolchain
-    py_toolchain = ctx.toolchains["@rules_python//python:toolchain_type"].py3_runtime
-    
-    # Collect all Python dependencies
-    py_deps = []
-    for dep in ctx.attr.deps:
-        if PyInfo in dep:
-            py_deps.append(dep[PyInfo].transitive_sources)
-    
-    # Run the test directly with environment inheritance
-    # Based on CocoTB runner: test runs from test_dir, references build_dir
+
     ctx.actions.run(
         executable = ctx.executable._cocotb_driver,
         arguments = [
-            "--mode", "test",
-            "--simulator", simulator,
-            "--build-dir", build_info.build_dir_tree.path,
-            "--test-dir", test_dir.path,
-            "--test-kwargs-txt", test_kwargs_file.path,
-            "--results-xml-out", results_xml.path
+            "test",
+            "--plan",
+            plan_file.path,
+            "--build-dir",
+            build_info.build_dir_tree.path,
+            "--results-xml-out",
+            results_xml.path,
         ],
         inputs = depset(
             direct = [
                 build_info.build_dir_tree,
                 build_info.stamp_file,
-                test_kwargs_file,
-                test_dir,
-            ],
-            transitive = [
-                ctx.attr._cocotb_driver[PyInfo].transitive_sources,
-                py_toolchain.files,
-            ] + py_deps,
+                plan_file,
+            ] + ctx.files.test_module,
+            transitive = [dep_sources],
         ),
         outputs = [results_xml],
+        tools = [ctx.executable._cocotb_driver],
         mnemonic = "CocotbTest",
-        progress_message = "Running CocoTB test for {}".format(ctx.label.name),
-        use_default_shell_env = True,  # Inherit PATH and other environment variables
+        progress_message = "Running CocoTB test {}".format(ctx.label),
+        use_default_shell_env = True,
     )
-    
-    # Create test script for Bazel test execution
-    test_script = ctx.actions.declare_file("{}_test.sh".format(ctx.label.name))
-    test_script_content = """#!/bin/bash
-set -e
 
-# Copy results.xml to expected location
-if [ -f "{results_xml}" ]; then
-    cp "{results_xml}" "${{XML_OUTPUT_FILE:-results.xml}}"
-fi
-
-# Test passes if we get here (driver exits with proper code)
-echo "Test completed successfully"
-""".format(results_xml = results_xml.short_path)
-    
-    ctx.actions.write(
-        output = test_script,
-        content = test_script_content,
-        is_executable = True,
-    )
-    
-    # Return test information
+    test_script = _test_script(ctx, results_xml)
     return [
         DefaultInfo(
             executable = test_script,
@@ -377,90 +326,87 @@ echo "Test completed successfully"
         ),
     ]
 
-# Rule definitions
-
 cocotb_cfg = rule(
     implementation = _cocotb_cfg_impl,
     attrs = {
         "simulator": attr.string(
-            doc = "Simulator name (e.g., 'verilator', 'icarus', 'questa')",
             default = "verilator",
-            values = ["ghdl", "icarus", "questa", "verilator", "vcs"],
+            doc = "Simulator name passed through to CocoTB's runner API.",
         ),
     },
-    doc = "Configure simulator for CocoTB pipeline",
+    doc = "Create a simulator configuration target for the CocoTB pipeline.",
 )
 
 cocotb_build = rule(
     implementation = _cocotb_build_impl,
     attrs = {
         "cfg": attr.label(
-            doc = "CocoTB configuration (cocotb_cfg target)",
-            providers = [CocotbCfgInfo],
             mandatory = True,
+            providers = [CocotbCfgInfo],
+            doc = "Configuration target created by cocotb_cfg.",
         ),
         "sources": attr.label_list(
-            doc = "Language-agnostic source files (assumed Verilog if not tagged)",
             allow_files = [".v", ".sv", ".vhd", ".vhdl", ".vlt"],
             default = [],
+            doc = "Language-agnostic HDL sources. Files are classified by extension.",
         ),
         "verilog_sources": attr.label_list(
-            doc = "Verilog source files",
             allow_files = [".v", ".sv"],
             default = [],
+            doc = "Verilog or SystemVerilog source files.",
         ),
         "vhdl_sources": attr.label_list(
-            doc = "VHDL source files",
             allow_files = [".vhd", ".vhdl"],
             default = [],
+            doc = "VHDL source files.",
         ),
         "includes": attr.string_list(
-            doc = "Include directories",
             default = [],
+            doc = "Include directories passed to the simulator build step.",
         ),
         "defines": attr.string_dict(
-            doc = "Preprocessor defines",
             default = {},
+            doc = "Preprocessor defines for the simulator build step.",
         ),
         "parameters": attr.string_dict(
-            doc = "Verilog parameters or VHDL generics",
             default = {},
+            doc = "Verilog parameters or VHDL generics.",
         ),
         "build_args": attr.string_list(
-            doc = "Extra build arguments for the simulator",
             default = [],
+            doc = "Extra simulator-specific build arguments.",
         ),
         "hdl_toplevel": attr.string(
-            doc = "HDL toplevel module name",
             mandatory = True,
+            doc = "Name of the HDL toplevel module or entity.",
         ),
         "hdl_library": attr.string(
-            doc = "HDL library name",
             default = "top",
+            doc = "HDL library used for compilation.",
         ),
         "always": attr.bool(
-            doc = "Always run the build step",
             default = False,
+            doc = "Force the simulator build step even when cached artifacts exist.",
         ),
         "clean": attr.bool(
-            doc = "Clean build directory before building",
             default = False,
+            doc = "Clean the simulator build directory before compilation.",
         ),
         "verbose": attr.bool(
-            doc = "Enable verbose output",
             default = False,
+            doc = "Enable verbose simulator output.",
         ),
         "waves": attr.bool(
-            doc = "Enable waveform recording",
             default = False,
+            doc = "Enable waveform support during build.",
         ),
         "timescale": attr.string_list(
-            doc = "Time unit and precision (e.g., ['1ns', '1ps'])",
             default = [],
+            doc = "Optional [unit, precision] timescale pair.",
         ),
         "log_file": attr.string(
-            doc = "Build log file name",
             default = "",
+            doc = "Optional simulator build log file name.",
         ),
         "_cocotb_driver": attr.label(
             default = "//cocotb/tools:cocotb_driver",
@@ -468,100 +414,99 @@ cocotb_build = rule(
             cfg = "exec",
         ),
     },
-    toolchains = ["@rules_python//python:toolchain_type"],
-    doc = "Build HDL simulation using CocoTB",
+    doc = "Compile HDL sources for reuse across one or more CocoTB tests.",
 )
 
 cocotb_test = rule(
     implementation = _cocotb_test_impl,
     attrs = {
         "build": attr.label(
-            doc = "CocoTB build target (cocotb_build)",
-            providers = [CocotbBuildInfo],
             mandatory = True,
+            providers = [CocotbBuildInfo],
+            doc = "Build target created by cocotb_build.",
         ),
         "test_module": attr.label_list(
-            doc = "Python test modules",
             allow_files = [".py"],
             mandatory = True,
+            doc = "Python test modules containing cocotb tests.",
         ),
         "deps": attr.label_list(
-            doc = "Python dependencies",
-            providers = [PyInfo],
             default = [],
+            providers = [PyInfo],
+            doc = "Additional Python dependencies needed by the test modules.",
         ),
         "hdl_toplevel": attr.string(
-            doc = "HDL toplevel module (overrides build setting)",
             default = "",
+            doc = "Optional override for the HDL toplevel module name.",
         ),
         "hdl_toplevel_library": attr.string(
-            doc = "HDL toplevel library (overrides build setting)",
             default = "",
+            doc = "Optional override for the HDL toplevel library.",
         ),
         "hdl_toplevel_lang": attr.string(
-            doc = "HDL toplevel language",
             default = "verilog",
             values = ["verilog", "vhdl"],
+            doc = "Language of the HDL toplevel.",
         ),
         "gpi_interfaces": attr.string_list(
-            doc = "GPI interfaces to use",
             default = [],
+            doc = "Optional list of GPI interfaces.",
         ),
         "testcase": attr.string_list(
-            doc = "Specific testcases to run",
             default = [],
+            doc = "Optional subset of testcase names to run.",
         ),
         "seed": attr.string(
-            doc = "Random seed",
             default = "",
+            doc = "Optional random seed passed to the test run.",
         ),
         "elab_args": attr.string_list(
-            doc = "Elaboration arguments",
             default = [],
+            doc = "Extra elaboration arguments.",
         ),
         "test_args": attr.string_list(
-            doc = "Test arguments",
             default = [],
+            doc = "Extra simulator runtime arguments.",
         ),
         "plusargs": attr.string_list(
-            doc = "Simulator plusargs",
             default = [],
+            doc = "Simulator plusargs.",
         ),
         "extra_env": attr.string_dict(
-            doc = "Extra environment variables",
             default = {},
+            doc = "Extra environment variables to expose during the test run.",
         ),
         "waves": attr.bool(
-            doc = "Enable waveform recording",
             default = False,
+            doc = "Enable waveform dumping for the test run.",
         ),
         "gui": attr.bool(
-            doc = "Run with GUI",
             default = False,
+            doc = "Run the simulator in GUI mode when supported.",
         ),
         "parameters": attr.string_dict(
-            doc = "Runtime parameters",
             default = {},
+            doc = "Runtime parameter overrides for the test run.",
         ),
         "verbose": attr.bool(
-            doc = "Enable verbose output",
             default = False,
+            doc = "Enable verbose runtime output.",
         ),
         "timescale": attr.string_list(
-            doc = "Time unit and precision",
             default = [],
+            doc = "Optional [unit, precision] timescale pair for the run.",
         ),
         "log_file": attr.string(
-            doc = "Test log file name",
             default = "",
+            doc = "Optional simulator runtime log file name.",
         ),
         "pre_cmd": attr.string_list(
-            doc = "Commands to run before simulation",
             default = [],
+            doc = "Optional commands run by the simulator before test execution.",
         ),
         "test_filter": attr.string(
-            doc = "Regular expression to filter test names",
             default = "",
+            doc = "Optional regular expression filter for test names.",
         ),
         "_cocotb_driver": attr.label(
             default = "//cocotb/tools:cocotb_driver",
@@ -569,7 +514,6 @@ cocotb_test = rule(
             cfg = "exec",
         ),
     },
-    toolchains = ["@rules_python//python:toolchain_type"],
     test = True,
-    doc = "Run CocoTB tests against a build",
+    doc = "Run CocoTB tests against a reusable cocotb_build output.",
 )
