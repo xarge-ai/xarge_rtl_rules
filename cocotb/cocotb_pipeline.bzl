@@ -30,13 +30,16 @@ _BUILD_ONLY_KEYS = [
     "defines",
     "hdl_library",
     "includes",
-    "log_file",
-    "parameters",
     "sources",
-    "timescale",
-    "verbose",
     "verilog_sources",
     "vhdl_sources",
+]
+
+_SHARED_BUILD_TEST_KEYS = [
+    "log_file",
+    "parameters",
+    "timescale",
+    "verbose",
     "waves",
 ]
 
@@ -91,6 +94,10 @@ def cocotb_build_test(
     for key in _BUILD_ONLY_KEYS:
         if key in kwargs:
             build_kwargs[key] = kwargs.pop(key)
+
+    for key in _SHARED_BUILD_TEST_KEYS:
+        if key in kwargs:
+            build_kwargs[key] = kwargs[key]
 
     cocotb_build(**build_kwargs)
 

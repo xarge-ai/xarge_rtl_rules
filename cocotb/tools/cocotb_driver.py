@@ -48,6 +48,16 @@ def _build_parser():
         required = True,
         help = "Path to the xUnit XML file written for Bazel.",
     )
+    test_parser.add_argument(
+        "--failed-tests-out",
+        required = True,
+        help = "Path to a file containing the number of failed tests.",
+    )
+    test_parser.add_argument(
+        "--artifacts-dir",
+        required = True,
+        help = "Directory where runtime artifacts like waveforms are copied for Bazel outputs.",
+    )
 
     return parser
 
@@ -66,6 +76,8 @@ def main(argv = None):
         plan_path = Path(args.plan),
         build_dir = Path(args.build_dir),
         results_xml_out = Path(args.results_xml_out),
+        failed_tests_out = Path(args.failed_tests_out),
+        artifacts_dir_out = Path(args.artifacts_dir),
     )
 
 

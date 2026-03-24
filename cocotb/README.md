@@ -99,6 +99,10 @@ Common attrs:
 - `waves`, `gui`, `verbose`
 - `seed`, `timescale`, `log_file`, `test_filter`
 
+Building a `cocotb_test` target now also emits a `<target>.artifacts/` tree next
+to the results XML in `bazel-bin`. Runtime outputs such as `dump.vcd` are copied
+there so they remain available for post-run debug.
+
 ## Helper Macros
 
 `defs.bzl` includes small simulator helpers:

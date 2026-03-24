@@ -129,6 +129,20 @@ def _write_text(path, content):
     path.write_text(content, encoding = "utf-8")
 
 
+def _copy_directory_contents(source_dir, dest_dir):
+    dest_dir.mkdir(parents = True, exist_ok = True)
+    if not source_dir.exists():
+        return
+
+    for child in source_dir.iterdir():
+        target = dest_dir / child.name
+        if child.is_dir():
+            shutil.copytree(child, target, dirs_exist_ok = True)
+        else:
+            _ensure_parent(target)
+            shutil.copy2(child, target)
+
+
 def _find_python_roots(paths):
     roots = {os.getcwd()}
     for path_str in paths:
@@ -298,7 +312,7 @@ def _test_kwargs(plan, build_dir, test_dir, results_xml):
     return kwargs
 
 
-def run_test_plan(plan_path, build_dir, results_xml_out):
+def run_test_plan(plan_path, build_dir, results_xml_out, failed_tests_out, artifacts_dir_out):
     plan = _load_plan(plan_path)
     runtime_root = Path(tempfile.mkdtemp(prefix = "cocotb_test_"))
     runtime_dir = runtime_root / "run"
@@ -311,7 +325,7 @@ def run_test_plan(plan_path, build_dir, results_xml_out):
     _configure_python_environment(env, plan, tests_dir)
     _configure_cocotb_library_path(env)
 
-    kwargs = _test_kwargs(plan, build_dir, tests_dir, results_xml)
+    kwargs = _test_kwargs(plan, build_dir, runtime_dir, results_xml)
     kwargs["test_module"] = module_names
 
     previous_env = os.environ.copy()
@@ -342,11 +356,9 @@ def run_test_plan(plan_path, build_dir, results_xml_out):
     _total_tests, failed_tests = _parse_results_xml(final_results)
     _ensure_parent(results_xml_out)
     shutil.copy2(final_results, results_xml_out)
+    _write_text(failed_tests_out, "{}\n".format(failed_tests))
+    _copy_directory_contents(runtime_dir, artifacts_dir_out)
 
-    if runner_exception is not None and failed_tests == 0:
-        return 0
-    if failed_tests > 0:
-        return 1
     return 0
 
 
@@ -433,4 +445,10 @@ def run_legacy_one_shot(args):
     results_xml = Path(args.results_xml)
     if not results_xml.is_absolute():
         results_xml = Path.cwd() / results_xml
-    return run_test_plan(test_plan_path, build_dir, results_xml)
+    return run_test_plan(
+        test_plan_path,
+        build_dir,
+        results_xml,
+        one_shot_root / "failed_tests.txt",
+        one_shot_root / "artifacts",
+    )

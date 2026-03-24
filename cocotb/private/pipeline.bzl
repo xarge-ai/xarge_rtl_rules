@@ -267,15 +267,18 @@ def _test_plan(ctx, build_info, dep_entries):
 
     return plan
 
-def _test_script(ctx, results_xml):
+def _test_script(ctx, results_xml, failed_tests_file):
     script = ctx.actions.declare_file("{}_test.sh".format(ctx.label.name))
     content = """#!/usr/bin/env bash
 set -euo pipefail
 
 RESULTS_SHORT_PATH="{results_short_path}"
+FAILED_TESTS_SHORT_PATH="{failed_tests_short_path}"
 RUNFILE_PATH=""
+FAILED_TESTS_RUNFILE_PATH=""
 if [[ -n "${{TEST_SRCDIR:-}}" && -n "${{TEST_WORKSPACE:-}}" ]]; then
   RUNFILE_PATH="${{TEST_SRCDIR}}/${{TEST_WORKSPACE}}/${{RESULTS_SHORT_PATH}}"
+  FAILED_TESTS_RUNFILE_PATH="${{TEST_SRCDIR}}/${{TEST_WORKSPACE}}/${{FAILED_TESTS_SHORT_PATH}}"
 fi
 
 if [[ -n "$RUNFILE_PATH" && -f "$RUNFILE_PATH" ]]; then
@@ -286,7 +289,30 @@ else
   echo "missing CocoTB results file: $RESULTS_SHORT_PATH" >&2
   exit 1
 fi
-""".format(results_short_path = results_xml.short_path)
+
+FAILED_TESTS_PATH=""
+if [[ -n "$FAILED_TESTS_RUNFILE_PATH" && -f "$FAILED_TESTS_RUNFILE_PATH" ]]; then
+  FAILED_TESTS_PATH="$FAILED_TESTS_RUNFILE_PATH"
+elif [[ -f "$FAILED_TESTS_SHORT_PATH" ]]; then
+  FAILED_TESTS_PATH="$FAILED_TESTS_SHORT_PATH"
+else
+  echo "missing CocoTB failed-tests file: $FAILED_TESTS_SHORT_PATH" >&2
+  exit 1
+fi
+
+FAILED_TESTS="$(tr -d '[:space:]' < "$FAILED_TESTS_PATH")"
+if [[ -z "$FAILED_TESTS" ]]; then
+  echo "empty CocoTB failed-tests file: $FAILED_TESTS_PATH" >&2
+  exit 1
+fi
+
+if [[ "$FAILED_TESTS" != "0" ]]; then
+  exit 1
+fi
+""".format(
+        results_short_path = results_xml.short_path,
+        failed_tests_short_path = failed_tests_file.short_path,
+    )
     ctx.actions.write(output = script, content = content, is_executable = True)
     return script
 
@@ -305,6 +331,8 @@ def _cocotb_test_impl(ctx):
         _test_plan(ctx, build_info, _py_dep_entries(dep_sources)),
     )
     results_xml = ctx.actions.declare_file("{}.results.xml".format(ctx.label.name))
+    failed_tests_file = ctx.actions.declare_file("{}.failed_tests.txt".format(ctx.label.name))
+    artifacts_dir = ctx.actions.declare_directory("{}.artifacts".format(ctx.label.name))
 
     ctx.actions.run(
         executable = ctx.executable._cocotb_driver,
@@ -316,6 +344,10 @@ def _cocotb_test_impl(ctx):
             build_info.build_dir_tree.path,
             "--results-xml-out",
             results_xml.path,
+            "--failed-tests-out",
+            failed_tests_file.path,
+            "--artifacts-dir",
+            artifacts_dir.path,
         ],
         inputs = depset(
             direct = [
@@ -328,19 +360,19 @@ def _cocotb_test_impl(ctx):
                 driver_sources,
             ],
         ),
-        outputs = [results_xml],
+        outputs = [results_xml, failed_tests_file, artifacts_dir],
         tools = [driver_files_to_run],
         mnemonic = "CocotbTest",
         progress_message = "Running CocoTB test {}".format(ctx.label),
         use_default_shell_env = True,
     )
 
-    test_script = _test_script(ctx, results_xml)
+    test_script = _test_script(ctx, results_xml, failed_tests_file)
     return [
         DefaultInfo(
             executable = test_script,
-            files = depset([results_xml]),
-            runfiles = ctx.runfiles(files = [results_xml]),
+            files = depset([results_xml, failed_tests_file, artifacts_dir]),
+            runfiles = ctx.runfiles(files = [results_xml, failed_tests_file]),
         ),
     ]
 

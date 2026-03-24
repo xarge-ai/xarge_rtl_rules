@@ -88,6 +88,70 @@ class CocotbRuntimeTest(unittest.TestCase):
         self.assertEqual(str(results_xml), kwargs["results_xml"])
         self.assertEqual(str(test_dir / "sim.log"), kwargs["log_file"])
 
+    def test_run_test_plan_stages_runtime_artifacts_and_records_failures(self):
+        runtime = _load_runtime_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            build_dir = tmp / "build"
+            build_dir.mkdir()
+            module_path = tmp / "test_example.py"
+            module_path.write_text("pass\n", encoding = "utf-8")
+            plan_path = tmp / "plan.json"
+            plan_path.write_text(
+                """
+{
+  "simulator": "verilator",
+  "hdl_toplevel": "dummy_top",
+  "hdl_toplevel_library": "top",
+  "hdl_toplevel_lang": "verilog",
+  "python_sources": [],
+  "test_modules": [
+    {
+      "basename": "test_example.py",
+      "module_name": "test_example",
+      "path": "%s",
+      "short_path": "test_example.py"
+    }
+  ]
+}
+                """.strip() % module_path.as_posix(),
+                encoding = "utf-8",
+            )
+
+            def _fake_test(**kwargs):
+                test_dir = Path(kwargs["test_dir"])
+                test_dir.mkdir(parents = True, exist_ok = True)
+                (test_dir / "dump.vcd").write_text("$date\n", encoding = "utf-8")
+                Path(kwargs["results_xml"]).write_text(
+                    "<testsuite tests=\"1\" failures=\"1\"></testsuite>\n",
+                    encoding = "utf-8",
+                )
+                return None
+
+            fake_runner = mock.Mock()
+            fake_runner.test.side_effect = _fake_test
+
+            results_out = tmp / "out" / "results.xml"
+            failed_tests_out = tmp / "out" / "failed_tests.txt"
+            artifacts_dir_out = tmp / "out" / "artifacts"
+
+            with mock.patch.object(runtime, "get_runner", return_value = fake_runner):
+                with mock.patch.object(runtime, "_configure_python_environment"):
+                    with mock.patch.object(runtime, "_configure_cocotb_library_path"):
+                        exit_code = runtime.run_test_plan(
+                            plan_path = plan_path,
+                            build_dir = build_dir,
+                            results_xml_out = results_out,
+                            failed_tests_out = failed_tests_out,
+                            artifacts_dir_out = artifacts_dir_out,
+                        )
+
+            self.assertEqual(0, exit_code)
+            self.assertTrue(results_out.exists())
+            self.assertEqual("1", failed_tests_out.read_text(encoding = "utf-8").strip())
+            self.assertTrue((artifacts_dir_out / "dump.vcd").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
