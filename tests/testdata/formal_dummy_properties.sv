@@ -1,0 +1,2 @@
+module formal_dummy_properties;
+endmodule

@@ -31,6 +31,8 @@ Usage:
     )
 """
 
+load("//rtl:providers.bzl", "VerilogInfo", "collect_verilog_srcs")
+
 _RUN_SBY = Label("//formal:run_sby.py")
 
 def _copy_file_impl(ctx):
@@ -48,6 +50,84 @@ _copy_file = rule(
     attrs = {
         "src": attr.label(allow_single_file = True, mandatory = True),
         "out_name": attr.string(mandatory = True),
+    },
+)
+
+def _dedupe_strings(values):
+    seen = {}
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen[value] = True
+        result.append(value)
+    return result
+
+
+def _is_verilog_compile_source(file):
+    lowered = file.basename.lower()
+    return lowered.endswith(".v") or lowered.endswith(".sv")
+
+
+def _collect_rtl_files_impl(ctx):
+    all_files = depset(collect_verilog_srcs(ctx.attr.deps))
+    all_file_list = all_files.to_list()
+    compile_files = depset([file for file in all_file_list if _is_verilog_compile_source(file)])
+    return [
+        DefaultInfo(
+            files = compile_files,
+            runfiles = ctx.runfiles(files = all_file_list),
+        ),
+    ]
+
+
+_collect_rtl_files = rule(
+    implementation = _collect_rtl_files_impl,
+    attrs = {
+        "deps": attr.label_list(
+            doc = "RTL dependency targets, filegroups, or raw source files",
+            allow_files = True,
+            default = [],
+        ),
+    },
+)
+
+
+def _collect_rtl_metadata_impl(ctx):
+    includes = []
+    defines = []
+
+    for dep in ctx.attr.deps:
+        if VerilogInfo not in dep:
+            continue
+        includes.extend(dep[VerilogInfo].includes.to_list())
+        defines.extend(dep[VerilogInfo].defines.to_list())
+
+    metadata = {
+        "includes": _dedupe_strings(includes),
+        "defines": _dedupe_strings(defines),
+    }
+    out = ctx.actions.declare_file("{}.json".format(ctx.label.name))
+    ctx.actions.write(
+        output = out,
+        content = json.encode_indent(metadata) + "\n",
+    )
+    return [
+        DefaultInfo(
+            files = depset([out]),
+            runfiles = ctx.runfiles(files = [out]),
+        ),
+    ]
+
+
+_collect_rtl_metadata = rule(
+    implementation = _collect_rtl_metadata_impl,
+    attrs = {
+        "deps": attr.label_list(
+            doc = "RTL dependency targets, filegroups, or raw source files",
+            allow_files = True,
+            default = [],
+        ),
     },
 )
 
@@ -71,14 +151,14 @@ def sby_test(
     Args:
         name: Test target name.
         properties: SVA properties/bind file (.sv).
-        rtl_deps: RTL source file labels.
+        rtl_deps: RTL dependency labels, including raw source files, filegroups, or verilog_library targets.
         bmc_depth: Bounded model check depth (default: 20).
         prove: Enable unbounded prove task (default: False).
         multiclock: Enable multiclock for CDC designs (default: False).
         bmc_engine: BMC engine (default: "smtbmc").
         prove_engine: Prove engine (default: "abc pdr"; "smtbmc" if multiclock).
         prove_depth: K-induction depth for smtbmc prove (default: bmc_depth).
-        defines: Preprocessor defines for RTL files (e.g. ["VERILATOR"]).
+        defines: Additional preprocessor defines for RTL and properties (for example, ["VERILATOR"]).
         flatten: Pass -flatten to yosys prep (default: True).
         top: Top module name (default: properties filename stem).
         tags: Additional tags. "formal" is always included.
@@ -112,12 +192,26 @@ def sby_test(
     for d in defines:
         args.extend(["--define", d])
 
-    args.extend(["--properties", "$(location {})".format(properties)])
-    for dep in rtl_deps:
-        args.extend(["--rtl", "$(locations {})".format(dep)])
-
+    collector_target = name + "_rtl_files"
+    metadata_target = name + "_rtl_metadata"
     local_runner = name + "_run_sby.py"
     copy_target = name + "_copy_runner"
+
+    _collect_rtl_files(
+        name = collector_target,
+        deps = rtl_deps,
+        tags = all_tags,
+    )
+
+    _collect_rtl_metadata(
+        name = metadata_target,
+        deps = rtl_deps,
+        tags = all_tags,
+    )
+
+    args.extend(["--properties", "$(location {})".format(properties)])
+    args.extend(["--rtl", "$(locations :{})".format(collector_target)])
+    args.extend(["--rtl-metadata", "$(location :{})".format(metadata_target)])
 
     _copy_file(
         name = copy_target,
@@ -132,7 +226,7 @@ def sby_test(
         main = local_runner,
         precompile = "disabled",
         args = args,
-        data = [properties] + rtl_deps,
+        data = [properties, ":" + collector_target, ":" + metadata_target],
         tags = all_tags,
         **kwargs
     )

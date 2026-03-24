@@ -12,8 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_python//python:defs.bzl", "py_test")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "run_sby.py",
 ])
+
+py_test(
+    name = "run_sby_test",
+    srcs = [
+        "run_sby.py",
+        "run_sby_test.py",
+    ],
+    main = "run_sby_test.py",
+    python_version = "PY3",
+    srcs_version = "PY3",
+)

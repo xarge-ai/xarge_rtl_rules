@@ -2,6 +2,7 @@ load("@xarge_py_deps//:requirements.bzl", "requirement")
 load("//cocotb:defs.bzl", "cocotb_build", "cocotb_cfg", "cocotb_test")
 load(":cocotb_pipeline_test.bzl", "cocotb_rule_test_suite")
 load(":corsair_generate_test.bzl", "corsair_rule_test_suite")
+load(":formal_test.bzl", "formal_rule_test_suite")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -52,6 +53,10 @@ cocotb_rule_test_suite(
     name = "cocotb_rule_tests",
 )
 
+formal_rule_test_suite(
+    name = "formal_rule_tests",
+)
+
 corsair_rule_test_suite(
     name = "corsair_rule_tests",
 )
@@ -60,8 +65,10 @@ test_suite(
     name = "all_rule_tests",
     tests = [
         ":cocotb_rule_tests",
+        ":formal_rule_tests",
         ":corsair_rule_tests",
         ":cocotb_integration_artifacts_test",
         "//cocotb/tools:cocotb_runtime_test",
+        "//formal:run_sby_test",
     ],
 )

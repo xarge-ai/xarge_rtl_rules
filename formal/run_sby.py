@@ -19,6 +19,7 @@ from --bmc-depth, --prove, --rtl, --properties etc., then runs sby.
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -26,9 +27,56 @@ import sys
 import tempfile
 
 
+def _dedupe_strings(values):
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _resolve_input_path(path):
+    if os.path.isabs(path):
+        return path
+
+    test_srcdir = os.environ.get("TEST_SRCDIR")
+    test_workspace = os.environ.get("TEST_WORKSPACE")
+    if test_srcdir and test_workspace:
+        candidate = os.path.join(test_srcdir, test_workspace, path)
+        if os.path.exists(candidate):
+            return candidate
+
+    return os.path.abspath(path)
+
+
+def _load_rtl_metadata(path):
+    if not path:
+        return [], []
+    with open(_resolve_input_path(path), encoding = "utf-8") as stream:
+        metadata = json.load(stream)
+    return (
+        _dedupe_strings(metadata.get("includes", [])),
+        _dedupe_strings(metadata.get("defines", [])),
+    )
+
+
+def _read_formal_line(source_path, include_dirs, defines):
+    tokens = ["read", "-formal"]
+    tokens.extend("-I{}".format(_resolve_input_path(include_dir)) for include_dir in include_dirs)
+    tokens.extend("-D{}".format(define) for define in defines)
+    tokens.append(_resolve_input_path(source_path))
+    return " ".join(tokens)
+
+
 def generate_sby(args):
     """Generate .sby file content from parsed arguments."""
     top = args.top or os.path.splitext(os.path.basename(args.properties))[0]
+    metadata_includes, metadata_defines = _load_rtl_metadata(args.rtl_metadata)
+    all_includes = _dedupe_strings(metadata_includes)
+    all_defines = _dedupe_strings(metadata_defines + list(args.define or []))
 
     lines = []
 
@@ -65,15 +113,11 @@ def generate_sby(args):
 
     # [script]
     lines.append("[script]")
-    define_prefix = " ".join("-D{}".format(d) for d in (args.define or []))
-    rtl_paths = [os.path.abspath(rtl) for rtl in args.rtl_files]
-    properties_path = os.path.abspath(args.properties)
+    rtl_paths = [_resolve_input_path(rtl) for rtl in args.rtl_files]
+    properties_path = _resolve_input_path(args.properties)
     for rtl_path in rtl_paths:
-        if define_prefix:
-            lines.append("read -formal {} {}".format(define_prefix, rtl_path))
-        else:
-            lines.append("read -formal {}".format(rtl_path))
-    lines.append("read -formal {}".format(properties_path))
+        lines.append(_read_formal_line(rtl_path, all_includes, all_defines))
+    lines.append(_read_formal_line(properties_path, all_includes, all_defines))
     flatten = " -flatten" if not args.no_flatten else ""
     lines.append("prep -top {}{}".format(top, flatten))
     lines.append("")
@@ -90,19 +134,20 @@ def generate_sby(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SymbiYosys formal verification runner",
+        description = "SymbiYosys formal verification runner",
     )
-    parser.add_argument("--bmc-depth", type=int, default=20)
-    parser.add_argument("--bmc-engine", default="smtbmc")
-    parser.add_argument("--prove", action="store_true")
-    parser.add_argument("--prove-engine", default="abc pdr")
-    parser.add_argument("--prove-depth", type=int, default=None)
-    parser.add_argument("--multiclock", action="store_true")
-    parser.add_argument("--no-flatten", action="store_true")
-    parser.add_argument("--top", default=None)
-    parser.add_argument("--define", action="append", default=[])
-    parser.add_argument("--properties", required=True)
-    parser.add_argument("--rtl", action="append", nargs="+", default=[], dest="rtl_files")
+    parser.add_argument("--bmc-depth", type = int, default = 20)
+    parser.add_argument("--bmc-engine", default = "smtbmc")
+    parser.add_argument("--prove", action = "store_true")
+    parser.add_argument("--prove-engine", default = "abc pdr")
+    parser.add_argument("--prove-depth", type = int, default = None)
+    parser.add_argument("--multiclock", action = "store_true")
+    parser.add_argument("--no-flatten", action = "store_true")
+    parser.add_argument("--top", default = None)
+    parser.add_argument("--define", action = "append", default = [])
+    parser.add_argument("--properties", required = True)
+    parser.add_argument("--rtl-metadata", default = None)
+    parser.add_argument("--rtl", action = "append", nargs = "+", default = [], dest = "rtl_files")
 
     args = parser.parse_args()
 
@@ -123,7 +168,7 @@ def main():
             print("SKIP: SymbiYosys (sby) not found; skipping formal verification")
             sys.exit(0)
         else:
-            print("ERROR: SymbiYosys (sby) not found; cannot run formal verification", file=sys.stderr)
+            print("ERROR: SymbiYosys (sby) not found; cannot run formal verification", file = sys.stderr)
             sys.exit(1)
 
     sby_content = generate_sby(args)
@@ -131,7 +176,7 @@ def main():
     # Write .sby into TEST_TMPDIR so sby output stays in the sandbox
     tmpdir = os.environ.get("TEST_TMPDIR", tempfile.gettempdir())
     sby_file = os.path.join(tmpdir, "formal.sby")
-    with open(sby_file, "w") as f:
+    with open(sby_file, "w", encoding = "utf-8") as f:
         f.write(sby_content)
 
     print("Running formal verification")
@@ -140,7 +185,7 @@ def main():
         print("  " + line)
 
     os.chdir(tmpdir)
-    result = subprocess.run([sby_path, "-f", sby_file], env=os.environ)
+    result = subprocess.run([sby_path, "-f", sby_file], env = os.environ)
     sys.exit(result.returncode)
 
 
