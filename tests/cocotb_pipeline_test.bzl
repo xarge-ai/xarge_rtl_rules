@@ -2,6 +2,9 @@ load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("//cocotb:defs.bzl", "cocotb_build", "cocotb_build_test", "cocotb_cfg", "cocotb_test")
 load("//rtl:defs.bzl", "verilog_library")
 
+_WAVES_SETTING = str(Label("//cocotb/settings:waves"))
+_WAVE_FORMAT_SETTING = str(Label("//cocotb/settings:wave_format"))
+
 def _sorted_basenames(files):
     return sorted([file.basename for file in files])
 
@@ -227,6 +230,119 @@ _invalid_wave_output_test = analysistest.make(
     expect_failure = True,
 )
 
+def _cli_split_build_waves_on_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "cocotb_test_build.build.json",
+    )
+
+    asserts.true(env, '"waves": true' in action.content)
+
+    return analysistest.end(env)
+
+_cli_split_build_waves_on_test = analysistest.make(
+    _cli_split_build_waves_on_test_impl,
+    config_settings = {
+        _WAVES_SETTING: "on",
+    },
+)
+
+def _cli_split_test_waves_on_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "cocotb_test_target.test.json",
+    )
+
+    asserts.true(env, '"waves": true' in action.content)
+
+    return analysistest.end(env)
+
+_cli_split_test_waves_on_test = analysistest.make(
+    _cli_split_test_waves_on_test_impl,
+    config_settings = {
+        _WAVES_SETTING: "on",
+    },
+)
+
+def _cli_legacy_build_waves_off_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "legacy_cocotb_test_build.build.json",
+    )
+
+    asserts.true(env, '"waves": false' in action.content)
+
+    return analysistest.end(env)
+
+_cli_legacy_build_waves_off_test = analysistest.make(
+    _cli_legacy_build_waves_off_test_impl,
+    config_settings = {
+        _WAVES_SETTING: "off",
+    },
+)
+
+def _cli_legacy_test_waves_off_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "legacy_cocotb_test.test.json",
+    )
+
+    asserts.true(env, '"waves": false' in action.content)
+
+    return analysistest.end(env)
+
+_cli_legacy_test_waves_off_test = analysistest.make(
+    _cli_legacy_test_waves_off_test_impl,
+    config_settings = {
+        _WAVES_SETTING: "off",
+    },
+)
+
+def _cli_configurable_build_fst_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "configurable_cli_override_test_build.build.json",
+    )
+
+    asserts.true(env, '"waves": true' in action.content)
+    asserts.true(env, '"wave_format": "fst"' in action.content)
+
+    return analysistest.end(env)
+
+_cli_configurable_build_fst_test = analysistest.make(
+    _cli_configurable_build_fst_test_impl,
+    config_settings = {
+        _WAVES_SETTING: "on",
+        _WAVE_FORMAT_SETTING: "fst",
+    },
+)
+
+def _cli_configurable_test_fst_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "configurable_cli_override_test.test.json",
+    )
+
+    asserts.true(env, '"waves": true' in action.content)
+    asserts.true(env, '"wave_format": "fst"' in action.content)
+    asserts.true(env, '"wave_output": "waves/configurable.fst"' in action.content)
+
+    return analysistest.end(env)
+
+_cli_configurable_test_fst_test = analysistest.make(
+    _cli_configurable_test_fst_test_impl,
+    config_settings = {
+        _WAVES_SETTING: "on",
+        _WAVE_FORMAT_SETTING: "fst",
+    },
+)
+
 def cocotb_rule_test_suite(name):
     native.filegroup(
         name = "cocotb_dummy_filegroup",
@@ -355,6 +471,21 @@ def cocotb_rule_test_suite(name):
     )
 
     cocotb_build_test(
+        name = "configurable_cli_override_test",
+        sim_name = "verilator",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
+        test_module = ["testdata/cocotb_dummy_test.py"],
+        waves = select({
+            "//conditions:default": False,
+        }),
+        wave_output = "waves/configurable.fst",
+        wave_format = select({
+            "//conditions:default": "",
+        }),
+    )
+
+    cocotb_build_test(
         name = "legacy_cocotb_test",
         sim_name = "verilator",
         hdl_toplevel = "dummy_dut",
@@ -462,6 +593,36 @@ def cocotb_rule_test_suite(name):
         target_under_test = ":waves_invalid_output_dotdot_test",
     )
 
+    _cli_split_build_waves_on_test(
+        name = "cocotb_cli_split_build_waves_on_test",
+        target_under_test = ":cocotb_test_build",
+    )
+
+    _cli_split_test_waves_on_test(
+        name = "cocotb_cli_split_test_waves_on_test",
+        target_under_test = ":cocotb_test_target",
+    )
+
+    _cli_legacy_build_waves_off_test(
+        name = "cocotb_cli_legacy_build_waves_off_test",
+        target_under_test = ":legacy_cocotb_test_build",
+    )
+
+    _cli_legacy_test_waves_off_test(
+        name = "cocotb_cli_legacy_test_waves_off_test",
+        target_under_test = ":legacy_cocotb_test",
+    )
+
+    _cli_configurable_build_fst_test(
+        name = "cocotb_cli_configurable_build_fst_test",
+        target_under_test = ":configurable_cli_override_test_build",
+    )
+
+    _cli_configurable_test_fst_test(
+        name = "cocotb_cli_configurable_test_fst_test",
+        target_under_test = ":configurable_cli_override_test",
+    )
+
     native.test_suite(
         name = name,
         tests = [
@@ -481,5 +642,11 @@ def cocotb_rule_test_suite(name):
             ":cocotb_split_wave_output_plan_test",
             ":cocotb_invalid_wave_output_abs_test",
             ":cocotb_invalid_wave_output_dotdot_test",
+            ":cocotb_cli_split_build_waves_on_test",
+            ":cocotb_cli_split_test_waves_on_test",
+            ":cocotb_cli_legacy_build_waves_off_test",
+            ":cocotb_cli_legacy_test_waves_off_test",
+            ":cocotb_cli_configurable_build_fst_test",
+            ":cocotb_cli_configurable_test_fst_test",
         ],
     )

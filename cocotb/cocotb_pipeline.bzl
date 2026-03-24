@@ -40,8 +40,6 @@ _SHARED_BUILD_TEST_KEYS = [
     "parameters",
     "timescale",
     "verbose",
-    "waves",
-    "wave_format",
 ]
 
 _IGNORED_LEGACY_KEYS = [
@@ -49,12 +47,15 @@ _IGNORED_LEGACY_KEYS = [
     "sim",
 ]
 
+_WAVES_ON_CONDITION = str(Label("//cocotb/settings:waves_on"))
+_WAVES_OFF_CONDITION = str(Label("//cocotb/settings:waves_off"))
+_WAVE_FORMAT_VCD_CONDITION = str(Label("//cocotb/settings:wave_format_vcd"))
+_WAVE_FORMAT_FST_CONDITION = str(Label("//cocotb/settings:wave_format_fst"))
+
 CocotbCfgInfo = _CocotbCfgInfo
 CocotbBuildInfo = _CocotbBuildInfo
 
 cocotb_cfg = _cocotb_cfg
-cocotb_build = _cocotb_build
-cocotb_test = _cocotb_test
 
 def _translate_legacy_kwargs(kwargs):
     """Normalize legacy compatibility kwargs in place."""
@@ -64,6 +65,79 @@ def _translate_legacy_kwargs(kwargs):
     for key in _IGNORED_LEGACY_KEYS:
         kwargs.pop(key, None)
 
+def _configured_waves(value):
+    if value == None:
+        fallback = False
+    elif type(value) == "bool":
+        fallback = value
+    else:
+        return value
+
+    return select({
+        _WAVES_ON_CONDITION: True,
+        _WAVES_OFF_CONDITION: False,
+        "//conditions:default": fallback,
+    })
+
+def _configured_wave_format(value):
+    if value == None:
+        fallback = ""
+    elif type(value) == "string":
+        fallback = value
+    else:
+        return value
+
+    return select({
+        _WAVE_FORMAT_FST_CONDITION: "fst",
+        _WAVE_FORMAT_VCD_CONDITION: "vcd",
+        "//conditions:default": fallback,
+    })
+
+def cocotb_build(
+        name,
+        cfg,
+        hdl_toplevel,
+        waves = None,
+        wave_format = None,
+        **kwargs):
+    """Public wrapper over cocotb_build with optional CLI waveform overrides."""
+    _translate_legacy_kwargs(kwargs)
+
+    build_kwargs = dict(kwargs)
+    build_kwargs.update({
+        "name": name,
+        "cfg": cfg,
+        "hdl_toplevel": hdl_toplevel,
+        "waves": _configured_waves(waves),
+        "wave_format": _configured_wave_format(wave_format),
+    })
+
+    _cocotb_build(**build_kwargs)
+
+def cocotb_test(
+        name,
+        build,
+        test_module,
+        waves = None,
+        wave_output = None,
+        wave_format = None,
+        **kwargs):
+    """Public wrapper over cocotb_test with optional CLI waveform overrides."""
+    _translate_legacy_kwargs(kwargs)
+
+    test_kwargs = dict(kwargs)
+    test_kwargs.update({
+        "name": name,
+        "build": build,
+        "test_module": test_module,
+        "waves": _configured_waves(waves),
+        "wave_format": _configured_wave_format(wave_format),
+    })
+    if wave_output != None:
+        test_kwargs["wave_output"] = wave_output
+
+    _cocotb_test(**test_kwargs)
+
 def cocotb_build_test(
         name,
         hdl_toplevel,
@@ -72,6 +146,7 @@ def cocotb_build_test(
         verilog_sources = [],
         vhdl_sources = [],
         sources = [],
+        waves = None,
         wave_output = None,
         wave_format = None,
         **kwargs):
@@ -102,8 +177,8 @@ def cocotb_build_test(
         if key in kwargs:
             build_kwargs[key] = kwargs[key]
 
-    if wave_format != None:
-        build_kwargs["wave_format"] = wave_format
+    build_kwargs["waves"] = _configured_waves(waves)
+    build_kwargs["wave_format"] = _configured_wave_format(wave_format)
 
     cocotb_build(**build_kwargs)
 
@@ -112,10 +187,14 @@ def cocotb_build_test(
         "build": ":" + build_name,
         "test_module": test_module,
     }
+    for key in _SHARED_BUILD_TEST_KEYS:
+        if key in kwargs:
+            test_kwargs[key] = kwargs[key]
+
+    test_kwargs["waves"] = _configured_waves(waves)
+    test_kwargs["wave_format"] = _configured_wave_format(wave_format)
     if wave_output != None:
         test_kwargs["wave_output"] = wave_output
-    if wave_format != None:
-        test_kwargs["wave_format"] = wave_format
     test_kwargs.update(kwargs)
 
     cocotb_test(**test_kwargs)

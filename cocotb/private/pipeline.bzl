@@ -14,6 +14,7 @@
 
 """CocoTB pipeline rules for xarge_rtl_rules."""
 
+load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@rules_python//python:defs.bzl", "PyInfo")
 load("//rtl:providers.bzl", "VerilogInfo")
 
@@ -36,6 +37,9 @@ CocotbBuildInfo = provider(
         "wave_format": "Configured waveform format for the compiled design, if any.",
     },
 )
+
+_WAVES_SETTING = Label("//cocotb/settings:waves")
+_WAVE_FORMAT_SETTING = Label("//cocotb/settings:wave_format")
 
 def _json_file(ctx, filename, value):
     out = ctx.actions.declare_file(filename)
@@ -214,8 +218,22 @@ def _wave_format_value(value):
         return None
     return value.lower()
 
+def _effective_waves(ctx):
+    configured = ctx.attr._waves_setting[BuildSettingInfo].value
+    if configured == "on":
+        return True
+    if configured == "off":
+        return False
+    return ctx.attr.waves
+
+def _configured_wave_format(ctx):
+    configured = ctx.attr._wave_format_setting[BuildSettingInfo].value
+    if configured and configured != "auto":
+        return configured
+    return ctx.attr.wave_format
+
 def _build_wave_format(ctx, simulator):
-    wave_format = _wave_format_value(ctx.attr.wave_format)
+    wave_format = _wave_format_value(_configured_wave_format(ctx))
     if simulator == "verilator":
         if wave_format and wave_format not in ["vcd", "fst"]:
             fail("wave_format for simulator 'verilator' must be one of: vcd, fst")
@@ -225,8 +243,8 @@ def _build_wave_format(ctx, simulator):
             return "fst"
     return wave_format
 
-def _effective_test_wave_format(ctx, build_info):
-    wave_format = _wave_format_value(ctx.attr.wave_format)
+def _effective_test_wave_format(ctx, build_info, waves):
+    wave_format = _wave_format_value(_configured_wave_format(ctx))
     build_wave_format = build_info.wave_format
 
     if build_info.simulator != "verilator":
@@ -242,7 +260,7 @@ def _effective_test_wave_format(ctx, build_info):
         fail("wave_format = 'vcd' is incompatible with a cocotb_build target configured for 'fst'")
 
     effective = wave_format or build_wave_format
-    if ctx.attr.waves and ctx.attr.wave_output:
+    if waves and ctx.attr.wave_output:
         if ctx.attr.wave_output.endswith(".fst") and (effective or "vcd") != "fst":
             fail("wave_output ending in .fst requires wave_format = 'fst'")
         if ctx.attr.wave_output.endswith(".vcd") and effective == "fst":
@@ -270,7 +288,7 @@ def _cocotb_cfg_impl(ctx):
         ),
     ]
 
-def _build_plan(ctx, cfg_info, source_info, wave_format):
+def _build_plan(ctx, cfg_info, source_info, waves, wave_format):
     plan = {
         "cfg_file": cfg_info.cfg_file.path,
         "hdl_library": ctx.attr.hdl_library,
@@ -285,7 +303,7 @@ def _build_plan(ctx, cfg_info, source_info, wave_format):
         "always": ctx.attr.always,
         "clean": ctx.attr.clean,
         "verbose": ctx.attr.verbose,
-        "waves": ctx.attr.waves,
+        "waves": waves,
     }
 
     timescale = _timescale_value(ctx.attr.timescale)
@@ -304,6 +322,7 @@ def _build_plan(ctx, cfg_info, source_info, wave_format):
 def _cocotb_build_impl(ctx):
     cfg_info = ctx.attr.cfg[CocotbCfgInfo]
     source_info = _collect_source_inputs(ctx)
+    build_waves = _effective_waves(ctx)
     build_wave_format = _build_wave_format(ctx, cfg_info.simulator)
     driver_files_to_run = ctx.attr._cocotb_driver[DefaultInfo].files_to_run
     driver_sources = depset(
@@ -314,7 +333,7 @@ def _cocotb_build_impl(ctx):
     plan_file = _json_file(
         ctx,
         "{}.build.json".format(ctx.label.name),
-        _build_plan(ctx, cfg_info, source_info, build_wave_format),
+        _build_plan(ctx, cfg_info, source_info, build_waves, build_wave_format),
     )
     build_dir_tree = ctx.actions.declare_directory("{}_build".format(ctx.label.name))
     stamp_file = ctx.actions.declare_file("{}.build.ok".format(ctx.label.name))
@@ -354,8 +373,9 @@ def _cocotb_build_impl(ctx):
     ]
 
 def _test_plan(ctx, build_info, dep_entries):
+    waves = _effective_waves(ctx)
     wave_output = _wave_output_value(ctx.attr.wave_output)
-    wave_format = _effective_test_wave_format(ctx, build_info)
+    wave_format = _effective_test_wave_format(ctx, build_info, waves)
 
     plan = {
         "build_hdl_library": build_info.hdl_library,
@@ -372,7 +392,7 @@ def _test_plan(ctx, build_info, dep_entries):
         "test_args": ctx.attr.test_args,
         "plusargs": ctx.attr.plusargs,
         "extra_env": ctx.attr.extra_env,
-        "waves": ctx.attr.waves,
+        "waves": waves,
         "wave_output": wave_output,
         "wave_format": wave_format,
         "gui": ctx.attr.gui,
@@ -598,6 +618,14 @@ cocotb_build = rule(
             default = "",
             doc = "Optional simulator build log file name.",
         ),
+        "_waves_setting": attr.label(
+            default = _WAVES_SETTING,
+            providers = [BuildSettingInfo],
+        ),
+        "_wave_format_setting": attr.label(
+            default = _WAVE_FORMAT_SETTING,
+            providers = [BuildSettingInfo],
+        ),
         "_cocotb_driver": attr.label(
             default = "//cocotb/tools:cocotb_driver",
             executable = True,
@@ -705,6 +733,14 @@ cocotb_test = rule(
         "test_filter": attr.string(
             default = "",
             doc = "Optional regular expression filter for test names.",
+        ),
+        "_waves_setting": attr.label(
+            default = _WAVES_SETTING,
+            providers = [BuildSettingInfo],
+        ),
+        "_wave_format_setting": attr.label(
+            default = _WAVE_FORMAT_SETTING,
+            providers = [BuildSettingInfo],
         ),
         "_cocotb_driver": attr.label(
             default = "//cocotb/tools:cocotb_driver",

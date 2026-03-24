@@ -1,0 +1,35 @@
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+
+package(default_visibility = ["//visibility:public"])
+
+string_flag(
+    name = "waves",
+    build_setting_default = "auto",
+    values = ["auto", "on", "off"],
+)
+
+config_setting(
+    name = "waves_on",
+    flag_values = {":waves": "on"},
+)
+
+config_setting(
+    name = "waves_off",
+    flag_values = {":waves": "off"},
+)
+
+string_flag(
+    name = "wave_format",
+    build_setting_default = "auto",
+    values = ["auto", "vcd", "fst"],
+)
+
+config_setting(
+    name = "wave_format_vcd",
+    flag_values = {":wave_format": "vcd"},
+)
+
+config_setting(
+    name = "wave_format_fst",
+    flag_values = {":wave_format": "fst"},
+)

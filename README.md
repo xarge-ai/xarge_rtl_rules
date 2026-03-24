@@ -35,6 +35,7 @@ load("@xarge_rtl_rules//synthesis:defs.bzl", "fpga_build")  # Future
 
 - [Corsair Rules](corsair/README.md)
 - [CocoTB Rules](cocotb/README.md)
+  Includes waveform CLI overrides such as `--@xarge_rtl_rules//cocotb/settings:waves=on` and `--@xarge_rtl_rules//cocotb/settings:wave_format=fst`.
 - [Migration Guide](../common-ip/MIGRATION_GUIDE.md)
 
 ## Repository Structure

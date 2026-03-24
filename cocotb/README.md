@@ -103,6 +103,55 @@ Building a `cocotb_test` target now also emits a `<target>.artifacts/` tree next
 to the results XML in `bazel-bin`. Runtime outputs such as `dump.vcd` are copied
 there so they remain available for post-run debug.
 
+## Waveform CLI Overrides
+
+For ad hoc debug, cocotb rules now support repo-wide waveform overrides via Bazel
+build settings:
+
+```bash
+bazel test //path/to:test \
+  --@xarge_rtl_rules//cocotb/settings:waves=on
+
+bazel test //path/to:test \
+  --@xarge_rtl_rules//cocotb/settings:waves=on \
+  --@xarge_rtl_rules//cocotb/settings:wave_format=fst
+```
+
+Supported values:
+
+- `--@xarge_rtl_rules//cocotb/settings:waves=auto|on|off`
+- `--@xarge_rtl_rules//cocotb/settings:wave_format=auto|vcd|fst`
+
+Behavior:
+
+- `waves=auto` keeps the BUILD-file setting unchanged
+- `waves=on` forces waveform capture on for cocotb build/test wrappers
+- `waves=off` forces waveform capture off for cocotb build/test wrappers
+- `wave_format=fst` selects FST tracing for Verilator build/test flows
+- `wave_output` remains a per-target BUILD attr because artifact paths are usually test-specific
+
+Example:
+
+```starlark
+cocotb_build_test(
+    name = "rv_skid_buffer_test",
+    sim_name = "verilator",
+    hdl_toplevel = "rv_skid_buffer",
+    verilog_sources = ["//rtl/utils:rv_skid_buffer_v"],
+    test_module = ["test_rv_skid_buffer.py"],
+    wave_output = "waves/rv_skid_buffer.fst",
+)
+```
+
+Then run:
+
+```bash
+bazel test //path/to:rv_skid_buffer_test \
+  --@xarge_rtl_rules//cocotb/settings:waves=on \
+  --@xarge_rtl_rules//cocotb/settings:wave_format=fst
+```
+
+
 ## Helper Macros
 
 `defs.bzl` includes small simulator helpers:
