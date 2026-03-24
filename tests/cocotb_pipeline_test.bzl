@@ -1,5 +1,6 @@
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("//cocotb:defs.bzl", "cocotb_build", "cocotb_build_test", "cocotb_cfg", "cocotb_test")
+load("//rtl:defs.bzl", "verilog_library")
 
 def _sorted_basenames(files):
     return sorted([file.basename for file in files])
@@ -87,7 +88,80 @@ def _legacy_macro_test_waves_test_impl(ctx):
 
 _legacy_macro_test_waves_test = analysistest.make(_legacy_macro_test_waves_test_impl)
 
+def _verilog_library_build_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "cocotb_mixed_verilog_build.build.json",
+    )
+
+    asserts.true(env, "cocotb_dummy_dut.sv" in action.content)
+    asserts.true(env, "cocotb_dummy_lib_top.sv" in action.content)
+    asserts.true(env, "cocotb_dummy_leaf.sv" in action.content)
+    asserts.true(env, "tests/testdata/include_leaf" in action.content)
+    asserts.true(env, "tests/testdata/include_top" in action.content)
+    asserts.true(env, "tests/testdata/include_user" in action.content)
+    asserts.true(env, "\"LEAF_FLAG\": \"\"" in action.content)
+    asserts.true(env, "\"WIDTH\": \"32\"" in action.content)
+    asserts.true(env, "\"USER_FLAG\": \"1\"" in action.content)
+
+    return analysistest.end(env)
+
+_verilog_library_build_plan_test = analysistest.make(_verilog_library_build_plan_test_impl)
+
+def _verilog_library_header_input_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_action(analysistest.target_actions(env), "CocotbBuild")
+    input_basenames = _sorted_basenames(action.inputs.to_list())
+
+    asserts.true(env, "cocotb_dummy_leaf.svh" in input_basenames)
+
+    return analysistest.end(env)
+
+_verilog_library_header_input_test = analysistest.make(_verilog_library_header_input_test_impl)
+
+def _legacy_macro_verilog_library_build_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "legacy_cocotb_mixed_test_build.build.json",
+    )
+
+    asserts.true(env, "cocotb_dummy_dut.sv" in action.content)
+    asserts.true(env, "cocotb_dummy_lib_top.sv" in action.content)
+    asserts.true(env, "cocotb_dummy_leaf.sv" in action.content)
+
+    return analysistest.end(env)
+
+_legacy_macro_verilog_library_build_plan_test = analysistest.make(_legacy_macro_verilog_library_build_plan_test_impl)
+
 def cocotb_rule_test_suite(name):
+    native.filegroup(
+        name = "cocotb_dummy_filegroup",
+        srcs = ["testdata/cocotb_dummy_dut.sv"],
+    )
+
+    verilog_library(
+        name = "cocotb_dummy_verilog_leaf",
+        srcs = [
+            "testdata/cocotb_dummy_leaf.sv",
+            "testdata/include_leaf/cocotb_dummy_leaf.svh",
+        ],
+        includes = ["tests/testdata/include_leaf"],
+        defines = ["LEAF_FLAG"],
+    )
+
+    verilog_library(
+        name = "cocotb_dummy_verilog_lib",
+        srcs = [
+            "testdata/cocotb_dummy_lib_top.sv",
+            "testdata/include_top/cocotb_dummy_top.svh",
+        ],
+        deps = [":cocotb_dummy_verilog_leaf"],
+        includes = ["tests/testdata/include_top"],
+        defines = ["WIDTH=32"],
+    )
+
     cocotb_cfg(
         name = "cocotb_test_cfg",
         simulator = "verilator",
@@ -98,6 +172,18 @@ def cocotb_rule_test_suite(name):
         cfg = ":cocotb_test_cfg",
         hdl_toplevel = "dummy_dut",
         verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
+    )
+
+    cocotb_build(
+        name = "cocotb_mixed_verilog_build",
+        cfg = ":cocotb_test_cfg",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = [
+            ":cocotb_dummy_filegroup",
+            ":cocotb_dummy_verilog_lib",
+        ],
+        includes = ["tests/testdata/include_user"],
+        defines = {"USER_FLAG": "1"},
     )
 
     cocotb_test(
@@ -113,6 +199,17 @@ def cocotb_rule_test_suite(name):
         verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
         test_module = ["testdata/cocotb_dummy_test.py"],
         waves = True,
+    )
+
+    cocotb_build_test(
+        name = "legacy_cocotb_mixed_test",
+        sim_name = "verilator",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = [
+            ":cocotb_dummy_filegroup",
+            ":cocotb_dummy_verilog_lib",
+        ],
+        test_module = ["testdata/cocotb_dummy_test.py"],
     )
 
     _build_driver_inputs_test(
@@ -140,6 +237,21 @@ def cocotb_rule_test_suite(name):
         target_under_test = ":legacy_cocotb_test",
     )
 
+    _verilog_library_build_plan_test(
+        name = "cocotb_verilog_library_build_plan_test",
+        target_under_test = ":cocotb_mixed_verilog_build",
+    )
+
+    _verilog_library_header_input_test(
+        name = "cocotb_verilog_library_header_input_test",
+        target_under_test = ":cocotb_mixed_verilog_build",
+    )
+
+    _legacy_macro_verilog_library_build_plan_test(
+        name = "cocotb_legacy_verilog_library_build_plan_test",
+        target_under_test = ":legacy_cocotb_mixed_test_build",
+    )
+
     native.test_suite(
         name = name,
         tests = [
@@ -148,5 +260,8 @@ def cocotb_rule_test_suite(name):
             ":cocotb_test_outputs_include_artifacts_test",
             ":cocotb_legacy_build_waves_test",
             ":cocotb_legacy_test_waves_test",
+            ":cocotb_verilog_library_build_plan_test",
+            ":cocotb_verilog_library_header_input_test",
+            ":cocotb_legacy_verilog_library_build_plan_test",
         ],
     )

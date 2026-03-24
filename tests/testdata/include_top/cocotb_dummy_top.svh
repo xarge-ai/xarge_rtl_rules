@@ -1,0 +1,4 @@
+`ifndef COCOTB_DUMMY_TOP_SVH
+`define COCOTB_DUMMY_TOP_SVH
+`define COCOTB_DUMMY_TOP_PRESENT 1
+`endif

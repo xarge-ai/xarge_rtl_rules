@@ -15,6 +15,7 @@
 """CocoTB pipeline rules for xarge_rtl_rules."""
 
 load("@rules_python//python:defs.bzl", "PyInfo")
+load("//rtl:providers.bzl", "VerilogInfo")
 
 CocotbCfgInfo = provider(
     doc = "Configuration for a CocoTB simulator pipeline.",
@@ -61,26 +62,58 @@ def _classify_generic_source(file):
         return "vhdl"
     return "verilog"
 
-def _append_source(entries, inputs, seen, file, kind):
-    if file.path in seen:
+def _is_verilog_compile_source(file):
+    lowered = file.basename.lower()
+    return lowered.endswith(".v") or lowered.endswith(".sv")
+
+def _append_input(inputs, seen_inputs, file):
+    if file.path in seen_inputs:
         return
-    seen[file.path] = True
+    seen_inputs[file.path] = True
     inputs.append(file)
+
+def _append_source(entries, inputs, seen_entries, seen_inputs, file, kind):
+    _append_input(inputs, seen_inputs, file)
+    if file.path in seen_entries:
+        return
+    seen_entries[file.path] = True
     entries.append(_file_entry(file, kind = kind))
 
 def _collect_source_inputs(ctx):
-    seen = {}
+    seen_entries = {}
+    seen_inputs = {}
     entries = []
     inputs = []
+    verilog_includes = []
+    verilog_defines = []
 
-    for file in ctx.files.verilog_sources:
-        _append_source(entries, inputs, seen, file, "verilog")
+    for dep in ctx.attr.verilog_sources:
+        if VerilogInfo in dep:
+            for file in dep[VerilogInfo].transitive_srcs.to_list():
+                if _is_verilog_compile_source(file):
+                    _append_source(entries, inputs, seen_entries, seen_inputs, file, "verilog")
+                else:
+                    _append_input(inputs, seen_inputs, file)
+            verilog_includes.extend(dep[VerilogInfo].includes.to_list())
+            verilog_defines.extend(dep[VerilogInfo].defines.to_list())
+        elif DefaultInfo in dep:
+            for file in dep[DefaultInfo].files.to_list():
+                if _is_verilog_compile_source(file):
+                    _append_source(entries, inputs, seen_entries, seen_inputs, file, "verilog")
+                else:
+                    _append_input(inputs, seen_inputs, file)
+
     for file in ctx.files.vhdl_sources:
-        _append_source(entries, inputs, seen, file, "vhdl")
+        _append_source(entries, inputs, seen_entries, seen_inputs, file, "vhdl")
     for file in ctx.files.sources:
-        _append_source(entries, inputs, seen, file, _classify_generic_source(file))
+        _append_source(entries, inputs, seen_entries, seen_inputs, file, _classify_generic_source(file))
 
-    return entries, inputs
+    return struct(
+        entries = entries,
+        inputs = inputs,
+        verilog_includes = _dedupe_strings(verilog_includes),
+        verilog_defines = _verilog_define_dict(verilog_defines),
+    )
 
 def _module_name(file):
     if file.basename.endswith(".py"):
@@ -106,6 +139,34 @@ def _py_dep_sources(ctx):
 
 def _py_dep_entries(dep_sources):
     return [_file_entry(file) for file in dep_sources.to_list()]
+
+def _dedupe_strings(values):
+    seen = {}
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen[value] = True
+        result.append(value)
+    return result
+
+def _verilog_define_dict(values):
+    result = {}
+    for value in values:
+        if "=" in value:
+            key, raw = value.split("=", 1)
+            result[key] = raw
+        else:
+            result[value] = ""
+    return result
+
+def _merge_define_dicts(base, override):
+    result = {}
+    for key, value in base.items():
+        result[key] = value
+    for key, value in override.items():
+        result[key] = value
+    return result
 
 def _optional_string(value):
     if value:
@@ -144,17 +205,17 @@ def _cocotb_cfg_impl(ctx):
         ),
     ]
 
-def _build_plan(ctx, cfg_info, source_entries):
+def _build_plan(ctx, cfg_info, source_info):
     plan = {
         "cfg_file": cfg_info.cfg_file.path,
         "hdl_library": ctx.attr.hdl_library,
         "hdl_toplevel": ctx.attr.hdl_toplevel,
         "label": str(ctx.label),
         "simulator": cfg_info.simulator,
-        "sources": source_entries,
+        "sources": source_info.entries,
         "build_args": ctx.attr.build_args,
-        "includes": ctx.attr.includes,
-        "defines": ctx.attr.defines,
+        "includes": _dedupe_strings(source_info.verilog_includes + ctx.attr.includes),
+        "defines": _merge_define_dicts(source_info.verilog_defines, ctx.attr.defines),
         "parameters": ctx.attr.parameters,
         "always": ctx.attr.always,
         "clean": ctx.attr.clean,
@@ -174,7 +235,7 @@ def _build_plan(ctx, cfg_info, source_entries):
 
 def _cocotb_build_impl(ctx):
     cfg_info = ctx.attr.cfg[CocotbCfgInfo]
-    source_entries, source_inputs = _collect_source_inputs(ctx)
+    source_info = _collect_source_inputs(ctx)
     driver_files_to_run = ctx.attr._cocotb_driver[DefaultInfo].files_to_run
     driver_sources = depset(
         transitive = [
@@ -184,7 +245,7 @@ def _cocotb_build_impl(ctx):
     plan_file = _json_file(
         ctx,
         "{}.build.json".format(ctx.label.name),
-        _build_plan(ctx, cfg_info, source_entries),
+        _build_plan(ctx, cfg_info, source_info),
     )
     build_dir_tree = ctx.actions.declare_directory("{}_build".format(ctx.label.name))
     stamp_file = ctx.actions.declare_file("{}.build.ok".format(ctx.label.name))
@@ -201,7 +262,7 @@ def _cocotb_build_impl(ctx):
             stamp_file.path,
         ],
         inputs = depset(
-            direct = [cfg_info.cfg_file, plan_file] + source_inputs,
+            direct = [cfg_info.cfg_file, plan_file] + source_info.inputs,
             transitive = [driver_sources],
         ),
         outputs = [build_dir_tree, stamp_file],
@@ -403,7 +464,7 @@ cocotb_build = rule(
         "verilog_sources": attr.label_list(
             allow_files = [".v", ".sv"],
             default = [],
-            doc = "Verilog or SystemVerilog source files.",
+            doc = "Verilog/SystemVerilog files, filegroups, or verilog_library targets. VerilogInfo includes/defines are merged transitively.",
         ),
         "vhdl_sources": attr.label_list(
             allow_files = [".vhd", ".vhdl"],

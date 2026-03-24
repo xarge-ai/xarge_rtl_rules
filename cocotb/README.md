@@ -119,6 +119,7 @@ Each helper is just a convenience wrapper around `cocotb_cfg`.
 
 - `cocotb_build` and `cocotb_test` are intentionally split so multiple tests can share one compiled simulator build.
 - `sources` accepts mixed HDL files and classifies them by extension. `.vlt` files are treated as Verilator control files.
+- `verilog_sources` accepts raw `.v`/`.sv` files, `filegroup` targets, and `verilog_library` targets. When a `verilog_library` is used, its transitive sources plus `includes`/`defines` are merged into the cocotb build step.
 - `deps` should include any Python packages imported by the cocotb tests beyond the runtime packages already supplied by this repo.
 
 ## Provenance
