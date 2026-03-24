@@ -1,7 +1,52 @@
+load("@xarge_py_deps//:requirements.bzl", "requirement")
+load("//cocotb:defs.bzl", "cocotb_build", "cocotb_cfg", "cocotb_test")
 load(":cocotb_pipeline_test.bzl", "cocotb_rule_test_suite")
 load(":corsair_generate_test.bzl", "corsair_rule_test_suite")
 
 package(default_visibility = ["//visibility:private"])
+
+cocotb_cfg(
+    name = "cocotb_integration_cfg",
+    simulator = "verilator",
+)
+
+cocotb_build(
+    name = "cocotb_integration_build",
+    cfg = ":cocotb_integration_cfg",
+    hdl_toplevel = "cocotb_integration_dut",
+    verilog_sources = ["testdata/cocotb_integration_dut.sv"],
+    waves = True,
+)
+
+cocotb_test(
+    name = "cocotb_integration_artifacts",
+    build = ":cocotb_integration_build",
+    test_module = ["testdata/cocotb_dummy_test.py"],
+    deps = [
+        requirement("cocotb"),
+    ],
+    waves = True,
+)
+
+cocotb_test(
+    name = "cocotb_integration_custom_artifacts",
+    build = ":cocotb_integration_build",
+    test_module = ["testdata/cocotb_dummy_test.py"],
+    deps = [
+        requirement("cocotb"),
+    ],
+    waves = True,
+    wave_output = "waves/custom.vcd",
+)
+
+sh_test(
+    name = "cocotb_integration_artifacts_test",
+    srcs = ["cocotb_integration_artifacts_test.sh"],
+    data = [
+        ":cocotb_integration_artifacts",
+        ":cocotb_integration_custom_artifacts",
+    ],
+)
 
 cocotb_rule_test_suite(
     name = "cocotb_rule_tests",
@@ -16,6 +61,7 @@ test_suite(
     tests = [
         ":cocotb_rule_tests",
         ":corsair_rule_tests",
+        ":cocotb_integration_artifacts_test",
         "//cocotb/tools:cocotb_runtime_test",
     ],
 )

@@ -19,8 +19,10 @@ import os
 import re
 import shutil
 import tempfile
+import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from pathlib import PurePosixPath
 
 try:
     from cocotb_tools.runner import get_runner
@@ -92,6 +94,90 @@ def _resolve_log_path(value, root_dir):
     if path.is_absolute():
         return str(path)
     return str(root_dir / path)
+
+
+def _normalize_wave_output(value):
+    if not value:
+        return None
+    if "\\" in value:
+        raise ValueError(
+            "Invalid wave_output path: {}. Must use forward slashes and not contain '..'.".format(value),
+        )
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError(
+            "Invalid wave_output path: {}. Must be a relative path and not contain '..'.".format(value),
+        )
+    return path.as_posix()
+
+
+def _normalize_wave_format(simulator, value):
+    if not value:
+        return None
+    wave_format = value.lower()
+    if simulator.lower() == "verilator" and wave_format not in ("vcd", "fst"):
+        raise ValueError(
+            "Invalid wave_format {!r} for simulator {!r}. Supported values: vcd, fst.".format(
+                value,
+                simulator,
+            ),
+        )
+    return wave_format
+
+
+def _verilator_wave_source_name(wave_format):
+    if wave_format == "fst":
+        return "dump.fst"
+    return "dump.vcd"
+
+
+def _wave_artifact_request(plan):
+    if not plan.get("waves"):
+        return None
+
+    simulator = plan["simulator"]
+    wave_output = _normalize_wave_output(plan.get("wave_output"))
+    wave_format = _normalize_wave_format(simulator, plan.get("wave_format"))
+
+    if simulator.lower() != "verilator":
+        if wave_output or wave_format:
+            warnings.warn(
+                "wave_output and wave_format are only applied for Verilator; ignoring them for simulator {!r}.".format(simulator),
+                stacklevel = 2,
+            )
+        return None
+
+    effective_wave_format = wave_format or "vcd"
+    if wave_output:
+        if wave_output.endswith(".fst") and effective_wave_format != "fst":
+            raise ValueError("wave_output ending in .fst requires wave_format = 'fst'")
+        if wave_output.endswith(".vcd") and effective_wave_format == "fst":
+            raise ValueError("wave_output ending in .vcd is incompatible with wave_format = 'fst'")
+        return _verilator_wave_source_name(effective_wave_format), wave_output
+
+    if wave_format == "fst":
+        source_name = _verilator_wave_source_name(wave_format)
+        return source_name, source_name
+
+    return None
+
+
+def _stage_wave_artifact(runtime_dir, artifacts_dir, source_name, artifact_relpath):
+    _copy_directory_contents(runtime_dir, artifacts_dir)
+
+    source_path = runtime_dir / source_name
+    if not source_path.exists():
+        raise FileNotFoundError(
+            "cocotb did not produce the requested waveform at {}".format(source_path),
+        )
+
+    artifact_path = Path(artifacts_dir) / artifact_relpath
+    if artifact_relpath != source_name:
+        default_artifact = Path(artifacts_dir) / source_name
+        if default_artifact.exists():
+            default_artifact.unlink()
+        _ensure_parent(artifact_path)
+        shutil.copy2(source_path, artifact_path)
 
 
 def _prepare_runner_sources(plan):
@@ -233,13 +319,27 @@ def _parse_results_xml(results_xml):
 
 
 def _build_kwargs(plan, build_dir):
+    simulator = plan["simulator"]
+    wave_format = _normalize_wave_format(simulator, plan.get("wave_format"))
+    build_args = list(plan.get("build_args", []))
+
+    if bool(plan.get("waves", False)):
+        if simulator.lower() == "verilator":
+            if wave_format == "fst" and "--trace-fst" not in build_args:
+                build_args.append("--trace-fst")
+        elif wave_format:
+            warnings.warn(
+                "wave_format is only applied for Verilator; ignoring it for simulator {!r}.".format(simulator),
+                stacklevel = 2,
+            )
+
     kwargs = {
         "hdl_library": plan["hdl_library"],
         "hdl_toplevel": plan["hdl_toplevel"],
         "includes": plan.get("includes", []),
         "defines": _coerce_mapping_values(plan.get("defines", {})),
         "parameters": _coerce_mapping_values(plan.get("parameters", {})),
-        "build_args": plan.get("build_args", []),
+        "build_args": build_args,
         "always": bool(plan.get("always", False)),
         "build_dir": str(build_dir),
         "clean": bool(plan.get("clean", False)),
@@ -314,15 +414,15 @@ def _test_kwargs(plan, build_dir, test_dir, results_xml):
 
 def run_test_plan(plan_path, build_dir, results_xml_out, failed_tests_out, artifacts_dir_out):
     plan = _load_plan(plan_path)
+    wave_request = _wave_artifact_request(plan)
     runtime_root = Path(tempfile.mkdtemp(prefix = "cocotb_test_"))
     runtime_dir = runtime_root / "run"
     runtime_dir.mkdir(parents = True, exist_ok = True)
-    tests_dir = runtime_root / "tests"
     results_xml = runtime_root / "results.xml"
 
-    module_names = _copy_test_modules(plan.get("test_modules", []), tests_dir)
+    module_names = _copy_test_modules(plan.get("test_modules", []), runtime_dir)
     env = os.environ.copy()
-    _configure_python_environment(env, plan, tests_dir)
+    _configure_python_environment(env, plan, runtime_dir)
     _configure_cocotb_library_path(env)
 
     kwargs = _test_kwargs(plan, build_dir, runtime_dir, results_xml)
@@ -351,13 +451,17 @@ def run_test_plan(plan_path, build_dir, results_xml_out, failed_tests_out, artif
     if not final_results.exists():
         if runner_exception is not None:
             raise runner_exception
-        raise FileNotFoundError("cocotb did not produce results XML at {}".format(final_results))
+        raise FileNotFoundError(f"cocotb did not produce results XML at {final_results}")
 
     _total_tests, failed_tests = _parse_results_xml(final_results)
     _ensure_parent(results_xml_out)
     shutil.copy2(final_results, results_xml_out)
-    _write_text(failed_tests_out, "{}\n".format(failed_tests))
-    _copy_directory_contents(runtime_dir, artifacts_dir_out)
+    _write_text(failed_tests_out, f"{failed_tests}\n")
+
+    if wave_request:
+        _stage_wave_artifact(runtime_dir, artifacts_dir_out, *wave_request)
+    else:
+        _copy_directory_contents(runtime_dir, artifacts_dir_out)
 
     return 0
 
@@ -398,6 +502,8 @@ def run_legacy_one_shot(args):
         build_plan["timescale"] = list(args.timescale)
     if args.log_file:
         build_plan["log_file"] = args.log_file
+    if args.wave_format:
+        build_plan["wave_format"] = args.wave_format
 
     build_plan_path = one_shot_root / "build.json"
     build_plan_path.write_text(json.dumps(build_plan, indent = 2) + "\n", encoding = "utf-8")
@@ -415,6 +521,8 @@ def run_legacy_one_shot(args):
         "plusargs": args.plusargs,
         "extra_env": _split_kv_pairs(args.extra_env),
         "waves": args.waves,
+        "wave_output": getattr(args, "wave_output", None),
+        "wave_format": getattr(args, "wave_format", None),
         "gui": args.gui,
         "parameters": args.parameters,
         "verbose": args.verbose,

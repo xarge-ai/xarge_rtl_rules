@@ -69,7 +69,7 @@ def _legacy_macro_build_waves_test_impl(ctx):
         "legacy_cocotb_test_build.build.json",
     )
 
-    asserts.true(env, "\"waves\": true" in action.content)
+    asserts.true(env, '"waves": true' in action.content)
 
     return analysistest.end(env)
 
@@ -82,7 +82,7 @@ def _legacy_macro_test_waves_test_impl(ctx):
         "legacy_cocotb_test.test.json",
     )
 
-    asserts.true(env, "\"waves\": true" in action.content)
+    asserts.true(env, '"waves": true' in action.content)
 
     return analysistest.end(env)
 
@@ -101,9 +101,9 @@ def _verilog_library_build_plan_test_impl(ctx):
     asserts.true(env, "tests/testdata/include_leaf" in action.content)
     asserts.true(env, "tests/testdata/include_top" in action.content)
     asserts.true(env, "tests/testdata/include_user" in action.content)
-    asserts.true(env, "\"LEAF_FLAG\": \"\"" in action.content)
-    asserts.true(env, "\"WIDTH\": \"32\"" in action.content)
-    asserts.true(env, "\"USER_FLAG\": \"1\"" in action.content)
+    asserts.true(env, '"LEAF_FLAG": ""' in action.content)
+    asserts.true(env, '"WIDTH": "32"' in action.content)
+    asserts.true(env, '"USER_FLAG": "1"' in action.content)
 
     return analysistest.end(env)
 
@@ -135,6 +135,98 @@ def _legacy_macro_verilog_library_build_plan_test_impl(ctx):
 
 _legacy_macro_verilog_library_build_plan_test = analysistest.make(_legacy_macro_verilog_library_build_plan_test_impl)
 
+def _wrapper_verilog_library_build_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "cocotb_wrapper_verilog_build.build.json",
+    )
+
+    asserts.true(env, "cocotb_dummy_lib_top.sv" in action.content)
+    asserts.true(env, "cocotb_dummy_leaf.sv" in action.content)
+
+    return analysistest.end(env)
+
+_wrapper_verilog_library_build_plan_test = analysistest.make(_wrapper_verilog_library_build_plan_test_impl)
+
+def _legacy_macro_wrapper_verilog_library_build_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "legacy_cocotb_wrapper_test_build.build.json",
+    )
+
+    asserts.true(env, "cocotb_dummy_lib_top.sv" in action.content)
+    asserts.true(env, "cocotb_dummy_leaf.sv" in action.content)
+
+    return analysistest.end(env)
+
+_legacy_macro_wrapper_verilog_library_build_plan_test = analysistest.make(_legacy_macro_wrapper_verilog_library_build_plan_test_impl)
+
+def _custom_wave_output_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "waves_custom_output_test.test.json",
+    )
+
+    asserts.true(env, '"wave_output": "waves/my_test.vcd"' in action.content)
+
+    return analysistest.end(env)
+
+_custom_wave_output_plan_test = analysistest.make(_custom_wave_output_plan_test_impl)
+
+def _build_fst_wave_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "waves_custom_output_fst_test_build.build.json",
+    )
+
+    asserts.true(env, '"wave_format": "fst"' in action.content)
+
+    return analysistest.end(env)
+
+_build_fst_wave_plan_test = analysistest.make(_build_fst_wave_plan_test_impl)
+
+def _legacy_macro_fst_wave_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "waves_custom_output_fst_test.test.json",
+    )
+
+    asserts.true(env, '"wave_format": "fst"' in action.content)
+    asserts.true(env, '"wave_output": "waves/my_test.fst"' in action.content)
+
+    return analysistest.end(env)
+
+_legacy_macro_fst_wave_plan_test = analysistest.make(_legacy_macro_fst_wave_plan_test_impl)
+
+def _split_wave_output_plan_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    action = _find_file_write_by_output(
+        analysistest.target_actions(env),
+        "cocotb_fst_test_target.test.json",
+    )
+
+    asserts.true(env, '"wave_format": "fst"' in action.content)
+    asserts.true(env, '"wave_output": "waves/from_split.fst"' in action.content)
+
+    return analysistest.end(env)
+
+_split_wave_output_plan_test = analysistest.make(_split_wave_output_plan_test_impl)
+
+def _invalid_wave_output_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    asserts.expect_failure(env, "wave_output must be a relative path")
+    return analysistest.end(env)
+
+_invalid_wave_output_test = analysistest.make(
+    _invalid_wave_output_test_impl,
+    expect_failure = True,
+)
+
 def cocotb_rule_test_suite(name):
     native.filegroup(
         name = "cocotb_dummy_filegroup",
@@ -162,6 +254,52 @@ def cocotb_rule_test_suite(name):
         defines = ["WIDTH=32"],
     )
 
+    verilog_library(
+        name = "cocotb_dummy_verilog_wrapper",
+        deps = [":cocotb_dummy_verilog_lib"],
+    )
+
+    cocotb_build_test(
+        name = "waves_custom_output_test",
+        sim_name = "verilator",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
+        test_module = ["testdata/cocotb_dummy_test.py"],
+        waves = True,
+        wave_output = "waves/my_test.vcd",
+    )
+
+    cocotb_build_test(
+        name = "waves_custom_output_fst_test",
+        sim_name = "verilator",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
+        test_module = ["testdata/cocotb_dummy_test.py"],
+        waves = True,
+        wave_output = "waves/my_test.fst",
+        wave_format = "fst",
+    )
+
+    cocotb_build_test(
+        name = "waves_invalid_output_abs_test",
+        sim_name = "verilator",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
+        test_module = ["testdata/cocotb_dummy_test.py"],
+        waves = True,
+        wave_output = "/tmp/should_fail.vcd",
+    )
+
+    cocotb_build_test(
+        name = "waves_invalid_output_dotdot_test",
+        sim_name = "verilator",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
+        test_module = ["testdata/cocotb_dummy_test.py"],
+        waves = True,
+        wave_output = "../should_fail.vcd",
+    )
+
     cocotb_cfg(
         name = "cocotb_test_cfg",
         simulator = "verilator",
@@ -186,10 +324,34 @@ def cocotb_rule_test_suite(name):
         defines = {"USER_FLAG": "1"},
     )
 
+    cocotb_build(
+        name = "cocotb_wrapper_verilog_build",
+        cfg = ":cocotb_test_cfg",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = [":cocotb_dummy_verilog_wrapper"],
+    )
+
+    cocotb_build(
+        name = "cocotb_fst_build",
+        cfg = ":cocotb_test_cfg",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = ["testdata/cocotb_dummy_dut.sv"],
+        waves = True,
+        wave_format = "fst",
+    )
+
     cocotb_test(
         name = "cocotb_test_target",
         build = ":cocotb_test_build",
         test_module = ["testdata/cocotb_dummy_test.py"],
+    )
+
+    cocotb_test(
+        name = "cocotb_fst_test_target",
+        build = ":cocotb_fst_build",
+        test_module = ["testdata/cocotb_dummy_test.py"],
+        waves = True,
+        wave_output = "waves/from_split.fst",
     )
 
     cocotb_build_test(
@@ -209,6 +371,14 @@ def cocotb_rule_test_suite(name):
             ":cocotb_dummy_filegroup",
             ":cocotb_dummy_verilog_lib",
         ],
+        test_module = ["testdata/cocotb_dummy_test.py"],
+    )
+
+    cocotb_build_test(
+        name = "legacy_cocotb_wrapper_test",
+        sim_name = "verilator",
+        hdl_toplevel = "dummy_dut",
+        verilog_sources = [":cocotb_dummy_verilog_wrapper"],
         test_module = ["testdata/cocotb_dummy_test.py"],
     )
 
@@ -252,6 +422,46 @@ def cocotb_rule_test_suite(name):
         target_under_test = ":legacy_cocotb_mixed_test_build",
     )
 
+    _wrapper_verilog_library_build_plan_test(
+        name = "cocotb_wrapper_verilog_library_build_plan_test",
+        target_under_test = ":cocotb_wrapper_verilog_build",
+    )
+
+    _legacy_macro_wrapper_verilog_library_build_plan_test(
+        name = "cocotb_legacy_wrapper_verilog_library_build_plan_test",
+        target_under_test = ":legacy_cocotb_wrapper_test_build",
+    )
+
+    _custom_wave_output_plan_test(
+        name = "cocotb_custom_wave_output_plan_test",
+        target_under_test = ":waves_custom_output_test",
+    )
+
+    _build_fst_wave_plan_test(
+        name = "cocotb_build_fst_wave_plan_test",
+        target_under_test = ":waves_custom_output_fst_test_build",
+    )
+
+    _legacy_macro_fst_wave_plan_test(
+        name = "cocotb_legacy_fst_wave_plan_test",
+        target_under_test = ":waves_custom_output_fst_test",
+    )
+
+    _split_wave_output_plan_test(
+        name = "cocotb_split_wave_output_plan_test",
+        target_under_test = ":cocotb_fst_test_target",
+    )
+
+    _invalid_wave_output_test(
+        name = "cocotb_invalid_wave_output_abs_test",
+        target_under_test = ":waves_invalid_output_abs_test",
+    )
+
+    _invalid_wave_output_test(
+        name = "cocotb_invalid_wave_output_dotdot_test",
+        target_under_test = ":waves_invalid_output_dotdot_test",
+    )
+
     native.test_suite(
         name = name,
         tests = [
@@ -263,5 +473,13 @@ def cocotb_rule_test_suite(name):
             ":cocotb_verilog_library_build_plan_test",
             ":cocotb_verilog_library_header_input_test",
             ":cocotb_legacy_verilog_library_build_plan_test",
+            ":cocotb_wrapper_verilog_library_build_plan_test",
+            ":cocotb_legacy_wrapper_verilog_library_build_plan_test",
+            ":cocotb_custom_wave_output_plan_test",
+            ":cocotb_build_fst_wave_plan_test",
+            ":cocotb_legacy_fst_wave_plan_test",
+            ":cocotb_split_wave_output_plan_test",
+            ":cocotb_invalid_wave_output_abs_test",
+            ":cocotb_invalid_wave_output_dotdot_test",
         ],
     )

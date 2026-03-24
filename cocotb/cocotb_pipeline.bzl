@@ -41,6 +41,7 @@ _SHARED_BUILD_TEST_KEYS = [
     "timescale",
     "verbose",
     "waves",
+    "wave_format",
 ]
 
 _IGNORED_LEGACY_KEYS = [
@@ -71,6 +72,8 @@ def cocotb_build_test(
         verilog_sources = [],
         vhdl_sources = [],
         sources = [],
+        wave_output = None,
+        wave_format = None,
         **kwargs):
     """Backward-compatible single target wrapper over the pipeline backend."""
     _translate_legacy_kwargs(kwargs)
@@ -99,6 +102,9 @@ def cocotb_build_test(
         if key in kwargs:
             build_kwargs[key] = kwargs[key]
 
+    if wave_format != None:
+        build_kwargs["wave_format"] = wave_format
+
     cocotb_build(**build_kwargs)
 
     test_kwargs = {
@@ -106,6 +112,10 @@ def cocotb_build_test(
         "build": ":" + build_name,
         "test_module": test_module,
     }
+    if wave_output != None:
+        test_kwargs["wave_output"] = wave_output
+    if wave_format != None:
+        test_kwargs["wave_format"] = wave_format
     test_kwargs.update(kwargs)
 
     cocotb_test(**test_kwargs)

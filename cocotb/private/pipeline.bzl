@@ -33,6 +33,7 @@ CocotbBuildInfo = provider(
         "hdl_toplevel": "HDL toplevel module name used during build.",
         "simulator": "Simulator name used for the compiled design.",
         "stamp_file": "Marker file written when the build completes successfully.",
+        "wave_format": "Configured waveform format for the compiled design, if any.",
     },
 )
 
@@ -66,6 +67,15 @@ def _is_verilog_compile_source(file):
     lowered = file.basename.lower()
     return lowered.endswith(".v") or lowered.endswith(".sv")
 
+def _is_verilog_input_file(file):
+    lowered = file.basename.lower()
+    return (
+        lowered.endswith(".v") or
+        lowered.endswith(".sv") or
+        lowered.endswith(".vh") or
+        lowered.endswith(".svh")
+    )
+
 def _append_input(inputs, seen_inputs, file):
     if file.path in seen_inputs:
         return
@@ -89,19 +99,26 @@ def _collect_source_inputs(ctx):
 
     for dep in ctx.attr.verilog_sources:
         if VerilogInfo in dep:
-            for file in dep[VerilogInfo].transitive_srcs.to_list():
-                if _is_verilog_compile_source(file):
-                    _append_source(entries, inputs, seen_entries, seen_inputs, file, "verilog")
-                else:
-                    _append_input(inputs, seen_inputs, file)
+            dep_files = dep[VerilogInfo].transitive_srcs.to_list()
             verilog_includes.extend(dep[VerilogInfo].includes.to_list())
             verilog_defines.extend(dep[VerilogInfo].defines.to_list())
         elif DefaultInfo in dep:
-            for file in dep[DefaultInfo].files.to_list():
-                if _is_verilog_compile_source(file):
-                    _append_source(entries, inputs, seen_entries, seen_inputs, file, "verilog")
-                else:
-                    _append_input(inputs, seen_inputs, file)
+            dep_files = dep[DefaultInfo].files.to_list()
+        else:
+            fail("verilog_sources target {} must provide DefaultInfo or VerilogInfo".format(dep.label))
+
+        for file in dep_files:
+            if not _is_verilog_input_file(file):
+                fail(
+                    "verilog_sources target {} produced unsupported file {}".format(
+                        dep.label,
+                        file.short_path,
+                    ),
+                )
+            if _is_verilog_compile_source(file):
+                _append_source(entries, inputs, seen_entries, seen_inputs, file, "verilog")
+            else:
+                _append_input(inputs, seen_inputs, file)
 
     for file in ctx.files.vhdl_sources:
         _append_source(entries, inputs, seen_entries, seen_inputs, file, "vhdl")
@@ -185,6 +202,54 @@ def _timescale_value(value):
         fail("timescale must contain exactly two entries, for example ['1ns', '1ps']")
     return value
 
+def _wave_output_value(value):
+    if not value:
+        return None
+    if value.startswith("/") or value.startswith("\\") or "\\" in value or ".." in value.split("/"):
+        fail("wave_output must be a relative path without '..': {}".format(value))
+    return value
+
+def _wave_format_value(value):
+    if not value:
+        return None
+    return value.lower()
+
+def _build_wave_format(ctx, simulator):
+    wave_format = _wave_format_value(ctx.attr.wave_format)
+    if simulator == "verilator":
+        if wave_format and wave_format not in ["vcd", "fst"]:
+            fail("wave_format for simulator 'verilator' must be one of: vcd, fst")
+        if wave_format:
+            return wave_format
+        if "--trace-fst" in ctx.attr.build_args:
+            return "fst"
+    return wave_format
+
+def _effective_test_wave_format(ctx, build_info):
+    wave_format = _wave_format_value(ctx.attr.wave_format)
+    build_wave_format = build_info.wave_format
+
+    if build_info.simulator != "verilator":
+        return wave_format or build_wave_format
+
+    if wave_format and wave_format not in ["vcd", "fst"]:
+        fail("wave_format for simulator 'verilator' must be one of: vcd, fst")
+
+    if wave_format == "fst" and build_wave_format != "fst":
+        fail("wave_format = 'fst' requires the cocotb_build target to use wave_format = 'fst' or equivalent build_args")
+
+    if wave_format == "vcd" and build_wave_format == "fst":
+        fail("wave_format = 'vcd' is incompatible with a cocotb_build target configured for 'fst'")
+
+    effective = wave_format or build_wave_format
+    if ctx.attr.waves and ctx.attr.wave_output:
+        if ctx.attr.wave_output.endswith(".fst") and (effective or "vcd") != "fst":
+            fail("wave_output ending in .fst requires wave_format = 'fst'")
+        if ctx.attr.wave_output.endswith(".vcd") and effective == "fst":
+            fail("wave_output ending in .vcd is incompatible with wave_format = 'fst'")
+
+    return effective
+
 def _cfg_manifest(ctx):
     simulator = ctx.attr.simulator.strip()
     if not simulator:
@@ -205,7 +270,7 @@ def _cocotb_cfg_impl(ctx):
         ),
     ]
 
-def _build_plan(ctx, cfg_info, source_info):
+def _build_plan(ctx, cfg_info, source_info, wave_format):
     plan = {
         "cfg_file": cfg_info.cfg_file.path,
         "hdl_library": ctx.attr.hdl_library,
@@ -231,11 +296,15 @@ def _build_plan(ctx, cfg_info, source_info):
     if log_file:
         plan["log_file"] = log_file
 
+    if wave_format:
+        plan["wave_format"] = wave_format
+
     return plan
 
 def _cocotb_build_impl(ctx):
     cfg_info = ctx.attr.cfg[CocotbCfgInfo]
     source_info = _collect_source_inputs(ctx)
+    build_wave_format = _build_wave_format(ctx, cfg_info.simulator)
     driver_files_to_run = ctx.attr._cocotb_driver[DefaultInfo].files_to_run
     driver_sources = depset(
         transitive = [
@@ -245,7 +314,7 @@ def _cocotb_build_impl(ctx):
     plan_file = _json_file(
         ctx,
         "{}.build.json".format(ctx.label.name),
-        _build_plan(ctx, cfg_info, source_info),
+        _build_plan(ctx, cfg_info, source_info, build_wave_format),
     )
     build_dir_tree = ctx.actions.declare_directory("{}_build".format(ctx.label.name))
     stamp_file = ctx.actions.declare_file("{}.build.ok".format(ctx.label.name))
@@ -280,10 +349,14 @@ def _cocotb_build_impl(ctx):
             stamp_file = stamp_file,
             hdl_toplevel = ctx.attr.hdl_toplevel,
             hdl_library = ctx.attr.hdl_library,
+            wave_format = build_wave_format,
         ),
     ]
 
 def _test_plan(ctx, build_info, dep_entries):
+    wave_output = _wave_output_value(ctx.attr.wave_output)
+    wave_format = _effective_test_wave_format(ctx, build_info)
+
     plan = {
         "build_hdl_library": build_info.hdl_library,
         "build_hdl_toplevel": build_info.hdl_toplevel,
@@ -300,6 +373,8 @@ def _test_plan(ctx, build_info, dep_entries):
         "plusargs": ctx.attr.plusargs,
         "extra_env": ctx.attr.extra_env,
         "waves": ctx.attr.waves,
+        "wave_output": wave_output,
+        "wave_format": wave_format,
         "gui": ctx.attr.gui,
         "parameters": ctx.attr.parameters,
         "python_sources": dep_entries,
@@ -433,7 +508,7 @@ def _cocotb_test_impl(ctx):
         DefaultInfo(
             executable = test_script,
             files = depset([results_xml, failed_tests_file, artifacts_dir]),
-            runfiles = ctx.runfiles(files = [results_xml, failed_tests_file]),
+            runfiles = ctx.runfiles(files = [results_xml, failed_tests_file, artifacts_dir]),
         ),
     ]
 
@@ -462,7 +537,7 @@ cocotb_build = rule(
             doc = "Language-agnostic HDL sources. Files are classified by extension.",
         ),
         "verilog_sources": attr.label_list(
-            allow_files = [".v", ".sv"],
+            allow_files = True,
             default = [],
             doc = "Verilog/SystemVerilog files, filegroups, or verilog_library targets. VerilogInfo includes/defines are merged transitively.",
         ),
@@ -510,6 +585,10 @@ cocotb_build = rule(
         "waves": attr.bool(
             default = False,
             doc = "Enable waveform support during build.",
+        ),
+        "wave_format": attr.string(
+            default = "",
+            doc = "Optional waveform format (for example, vcd or fst). Verilator supports vcd and fst.",
         ),
         "timescale": attr.string_list(
             default = [],
@@ -590,6 +669,14 @@ cocotb_test = rule(
         "waves": attr.bool(
             default = False,
             doc = "Enable waveform dumping for the test run.",
+        ),
+        "wave_output": attr.string(
+            default = "",
+            doc = "Optional relative path for staged waveform output. Must not be absolute or contain '..'.",
+        ),
+        "wave_format": attr.string(
+            default = "",
+            doc = "Optional waveform format (e.g., vcd, fst). Only supported for Verilator.",
         ),
         "gui": attr.bool(
             default = False,

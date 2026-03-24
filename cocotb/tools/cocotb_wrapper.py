@@ -58,6 +58,8 @@ def _parser():
     parser.add_argument("--verbose", action = "store_true", help = "Enable verbose output.")
     parser.add_argument("--timescale", nargs = 2, default = None, help = "Timescale unit and precision.")
     parser.add_argument("--waves", action = "store_true", help = "Enable waveform capture.")
+    parser.add_argument("--wave-output", default = None, help = "Optional relative path for staged waveform output.")
+    parser.add_argument("--wave-format", default = None, help = "Optional waveform format (e.g., vcd, fst). Only supported for Verilator.")
     parser.add_argument("--log_file", default = None, help = "Optional build or runtime log file.")
     parser.add_argument("--test_module", nargs = "*", default = [], help = "Python test module file paths.")
     parser.add_argument("--hdl_toplevel_library", default = None, help = "Override HDL toplevel library.")
