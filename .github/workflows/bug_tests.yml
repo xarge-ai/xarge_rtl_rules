@@ -31,6 +31,8 @@ jobs:
   python-bug-tests:
     name: Python Runner Bug Tests
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -71,6 +73,8 @@ jobs:
   bazel-bug-tests:
     name: Bazel Analysis Bug Tests
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -116,6 +120,8 @@ jobs:
   integration-tools:
     name: Integration Bug Tests (with tools from source)
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
