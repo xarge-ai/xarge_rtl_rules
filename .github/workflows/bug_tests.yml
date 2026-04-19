@@ -1,0 +1,224 @@
+# Bug-proof test CI workflow
+#
+# Runs all unit tests and Bazel analysis tests that prove the existence of
+# known bugs in xarge_rtl_rules.  Tools are installed from their latest
+# upstream sources so that the environment matches real-world usage.
+#
+# Jobs:
+#   python-bug-tests  — pure Python unit tests (no Bazel needed, fast)
+#   bazel-bug-tests   — Bazel analysis tests (no simulator needed)
+#   integration-tools — build/install latest Verilator + Verible from source
+#                       then run tool-dependent lint/formal bug tests
+
+name: Bug Proof Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Job 1: Python unit tests for runner-script bugs
+  # --------------------------------------------------------------------------
+  python-bug-tests:
+    name: Python Runner Bug Tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Run formal runner bug tests
+      - name: Run formal/run_sby bug tests
+        run: |
+          python -m unittest discover \
+            --start-directory formal \
+            --pattern "run_sby_test.py" \
+            --verbose
+        working-directory: ${{ github.workspace }}
+
+      # Run lint runner bug tests
+      - name: Run lint/runner bug tests
+        run: |
+          python -m unittest discover \
+            --start-directory lint/runner \
+            --pattern "run_lint_test.py" \
+            --verbose
+        working-directory: ${{ github.workspace }}
+
+      # Run packaging bundle bug tests
+      - name: Run packaging/tools bundle bug tests
+        run: |
+          python -m unittest bundle_test -v
+        working-directory: ${{ github.workspace }}/packaging/tools
+
+  # --------------------------------------------------------------------------
+  # Job 2: Bazel analysis tests (no simulator, checks rule analysis-phase bugs)
+  # --------------------------------------------------------------------------
+  bazel-bug-tests:
+    name: Bazel Analysis Bug Tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install Bazelisk — automatically downloads and pins the latest stable Bazel
+      - name: Install Bazelisk
+        run: |
+          curl -fsSL \
+            https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 \
+            -o /usr/local/bin/bazel
+          chmod +x /usr/local/bin/bazel
+          bazel version
+
+      - name: Set up Python 3.11 (required by rules_python)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Run the dedicated bug analysis test suite
+      - name: Run Bazel analysis bug tests
+        run: |
+          bazel test //tests:bug_rule_tests \
+            --test_output=all \
+            --verbose_failures
+
+      # Also run the existing rule tests to confirm nothing is regressed
+      - name: Run existing Bazel rule tests
+        run: |
+          bazel test \
+            //tests:cocotb_rule_tests \
+            //tests:formal_rule_tests \
+            //tests:corsair_rule_tests \
+            //formal:run_sby_test \
+            //lint/runner:run_lint_bug_test \
+            //packaging/tools:bundle_bug_test \
+            --test_output=all \
+            --verbose_failures
+
+  # --------------------------------------------------------------------------
+  # Job 3: Install tools from source and run integration bug tests
+  # --------------------------------------------------------------------------
+  integration-tools:
+    name: Integration Bug Tests (with tools from source)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ----- Base build dependencies ----------------------------------------
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            git cmake build-essential flex bison \
+            libfl2 libfl-dev zlib1g zlib1g-dev \
+            libgoogle-perftools-dev numactl \
+            perl python3 python3-pip \
+            autoconf automake libtool pkg-config \
+            curl wget ca-certificates
+
+      # ----- Verilator — latest from source --------------------------------
+      # Official install guide: https://verilator.org/guide/latest/install.html
+      - name: Cache Verilator source
+        id: cache-verilator
+        uses: actions/cache@v4
+        with:
+          path: /tmp/verilator
+          key: verilator-src-${{ runner.os }}-${{ hashFiles('.github/workflows/bug_tests.yml') }}
+
+      - name: Clone Verilator (latest)
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/verilator/verilator.git /tmp/verilator
+
+      - name: Build and install Verilator
+        run: |
+          cd /tmp/verilator
+          autoconf
+          ./configure
+          make -j$(nproc)
+          sudo make install
+          verilator --version
+
+      # ----- Verible — latest release binary (pre-built static) ------------
+      # Release page: https://github.com/chipsalliance/verible/releases
+      - name: Install Verible (latest release)
+        run: |
+          VERIBLE_TAG=$(
+            curl -fsSL https://api.github.com/repos/chipsalliance/verible/releases/latest \
+            | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])"
+          )
+          echo "Installing Verible ${VERIBLE_TAG}"
+          TARBALL="verible-${VERIBLE_TAG}-linux-static-x86_64.tar.gz"
+          curl -fsSL \
+            "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_TAG}/${TARBALL}" \
+            | tar xz -C /tmp
+          sudo cp /tmp/verible-${VERIBLE_TAG}/bin/verible-* /usr/local/bin/
+          verible-verilog-lint --version
+
+      # ----- SymbiYosys — latest from apt (yosys + ABC + Z3 solver) --------
+      # Building sby + yosys from source is very slow in CI; apt ships a
+      # recent enough version for smoke testing.
+      - name: Install SymbiYosys and solvers
+        run: |
+          sudo apt-get install -y yosys symbiyosys z3
+          sby --version || true   # sby may not print version on older packages
+
+      # ----- Python CocoTB dependencies ------------------------------------
+      - name: Install Python packages
+        run: |
+          pip install --upgrade pip
+          pip install cocotb cocotb-bus cocotbext-axi corsair
+
+      # ----- Bazelisk -------------------------------------------------------
+      - name: Install Bazelisk
+        run: |
+          curl -fsSL \
+            https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 \
+            -o /usr/local/bin/bazel
+          chmod +x /usr/local/bin/bazel
+          bazel version
+
+      # ----- Run lint bug tests with real tools ----------------------------
+      - name: Run Bazel lint runner bug tests (with Verilator)
+        run: |
+          bazel test //lint/runner:run_lint_bug_test \
+            --test_output=all \
+            --verbose_failures
+
+      # ----- Run formal runner bug tests -----------------------------------
+      - name: Run formal runner bug tests
+        run: |
+          bazel test //formal:run_sby_test \
+            --test_output=all \
+            --verbose_failures
+
+      # ----- Run packaging bug tests ---------------------------------------
+      - name: Run packaging bundle bug tests
+        run: |
+          bazel test //packaging/tools:bundle_bug_test \
+            --test_output=all \
+            --verbose_failures
+
+      # ----- Run Bazel analysis bug tests ----------------------------------
+      - name: Run Bazel analysis bug tests
+        run: |
+          bazel test //tests:bug_rule_tests \
+            --test_output=all \
+            --verbose_failures

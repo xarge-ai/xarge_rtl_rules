@@ -12,8 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_python//python:defs.bzl", "py_test")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "bundle.py",
 ])
+
+py_test(
+    name = "bundle_bug_test",
+    srcs = [
+        "bundle.py",
+        "bundle_test.py",
+    ],
+    main = "bundle_test.py",
+    python_version = "PY3",
+    srcs_version = "PY3",
+)
