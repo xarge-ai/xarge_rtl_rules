@@ -148,10 +148,22 @@ jobs:
           path: /tmp/verilator
           key: verilator-src-${{ runner.os }}-${{ hashFiles('.github/workflows/bug_tests.yml') }}
 
-      - name: Clone Verilator (latest)
-        if: steps.cache-verilator.outputs.cache-hit != 'true'
+      - name: Sync Verilator to latest upstream HEAD
         run: |
-          git clone --depth 1 https://github.com/verilator/verilator.git /tmp/verilator
+          VERILATOR_REPO=https://github.com/verilator/verilator.git
+          if [ -d /tmp/verilator/.git ]; then
+            git -C /tmp/verilator remote set-url origin "${VERILATOR_REPO}"
+          else
+            rm -rf /tmp/verilator
+            git clone --depth 1 "${VERILATOR_REPO}" /tmp/verilator
+          fi
+          VERILATOR_DEFAULT_BRANCH=$(
+            git ls-remote --symref "${VERILATOR_REPO}" HEAD \
+            | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}'
+          )
+          git -C /tmp/verilator fetch --depth 1 origin "${VERILATOR_DEFAULT_BRANCH}"
+          git -C /tmp/verilator reset --hard FETCH_HEAD
+          git -C /tmp/verilator clean -fdx
 
       - name: Build and install Verilator
         run: |
